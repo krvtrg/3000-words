@@ -78,7 +78,7 @@ Section "Uninstall"
 
   ; Прогресс по умолчанию остаётся: при тихом удалении и при ответе «Нет».
   IfSilent done
-  MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Удалить также сохранённый прогресс обучения?$\r$\n$\r$\nЕсли собираетесь установить программу снова, выберите «Нет»." IDNO done
+  MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Удалить также сохранённый прогресс?$\r$\n$\r$\nЕсли собираетесь установить программу снова,   $\r$\nвыберите «Нет»." IDNO done
   RMDir /r "$LOCALAPPDATA\${APP_ID}"
   done:
 SectionEnd

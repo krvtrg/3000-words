@@ -15,6 +15,8 @@ function dayDate(n){const d=new Date(n*DAY);return new Date(d.getUTCFullYear(),d
 // сутки начинаются в 4 утра по местным часам: занятие после полуночи относится к прошедшему дню
 const today=()=>{const d=new Date();d.setHours(d.getHours()-4);return dayNum(d)};
 const fmtDate=(n,o)=>dayDate(n).toLocaleDateString('ru-RU',o||{day:'numeric',month:'long'});
+const night=()=>dayNum()!==today();              // после полуночи и до 4 утра ещё идёт вчерашний учебный день
+const NIGHT='Учебный день длится до 4 утра: занятие после полуночи засчитывается за прошедший день.';
 
 const ICON={
  today:'<rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M8 3v4M16 3v4M3.5 10h17"/><path d="m9 15 2 2 4-4"/>',
@@ -62,7 +64,7 @@ function sanitize(d){
   if(Number.isFinite(+st.rate)) s.set.rate=Math.min(1.2,Math.max(.5,+st.rate));
   if(d.p&&typeof d.p==='object') for(const k in d.p){const v=d.p[k]; if(byEn[k]&&Array.isArray(v)&&Number.isFinite(+v[0])){const a=Math.round(+v[0]); if(a>=-2&&a<=7) s.p[k]=[a,int(v[1],0,1e6),int(v[2],0,1e6),int(v[3],0,1e6)]}}
   if(d.tr&&typeof d.tr==='object') for(const k in d.tr){if(byEn[k]&&typeof d.tr[k]==='string'&&d.tr[k].trim()) s.tr[k]=d.tr[k].trim().slice(0,200)}
-  if(d.hist&&typeof d.hist==='object') for(const k in d.hist){const v=d.hist[k]; if(/^\d{1,6}$/.test(k)&&Array.isArray(v)) s.hist[+k]=[0,1,2,3,4].map(i=>int(v[i],0,1e6))}
+  if(d.hist&&typeof d.hist==='object') for(const k in d.hist){const v=d.hist[k]; if(/^\d{1,6}$/.test(k)&&Array.isArray(v)) s.hist[+k]=[0,1,2,3,4,5].map(i=>int(v[i],0,1e6))}
   if(Array.isArray(d.extra)&&Number.isFinite(+d.extra[0])) s.extra=[int(d.extra[0],0,1e6),int(d.extra[1],0,1000)];
   s.first=int(d.first,0,1e6);s.backup=int(d.backup,0,1e6);
   s.started=!!d.started||Object.keys(s.p).length>0;
@@ -81,7 +83,8 @@ let S=store.load();
 const save=()=>store.save(S);
 const st=w=>{const p=S.p[w.en];return p?p[0]:null};
 const tr=w=>S.tr[w.en]||w.ru;
-const hist=d=>S.hist[d]||(S.hist[d]=[0,0,0,0,0]);
+// история дня: [новых слов, повторено, верных ответов, ошибок, заданий тренировки, разобрано в сортировке]
+const hist=d=>S.hist[d]||(S.hist[d]=[0,0,0,0,0,0]);
 
 function applyTheme(){
   const t=S.set.theme==='auto'?(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):S.set.theme;
@@ -192,7 +195,7 @@ function reviewType(stage){if(stage<=1)return'er';if(stage===2)return're';if(sta
 let view='home', ses=null, cur=null, timer=null, sortS=null, sum=null;
 // Защита от двойного нажатия: после смены экрана или задания кнопки на долю секунды не реагируют,
 // иначе второе касание попадает в кнопку, оказавшуюся на том же месте.
-let guardMs=300, guardUntil=0, shownDay=0;
+let guardMs=300, guardUntil=0, shownDay=0, shownNight=false;
 const arm=()=>{guardUntil=performance.now()+guardMs};
 const dict={q:'',f:'all',limit:80};
 const prac={src:'learning',mode:'mix',n:20};
@@ -200,7 +203,7 @@ const app=$('#app');
 
 function go(v){view=v;ses=null;cur=null;clearTimeout(timer);render();window.scrollTo(0,0)}
 function render(){
-  applyTheme();shownDay=today();
+  applyTheme();shownDay=today();shownNight=night();
   if(view==='session'){return}
   if(view==='sort'){app.innerHTML=sortHTML();bindSwipe();return}
   if(view==='summary'){app.innerHTML=summaryHTML();return}
@@ -226,7 +229,7 @@ function backupNotice(c){
 function perDaySeg(){return `<div class="seg" role="group" aria-label="Новых слов в день">${[5,10,15,20].map(n=>`<button data-act="perday" data-n="${n}" aria-pressed="${S.set.perDay===n}">${n}</button>`).join('')}</div>`}
 function homeHTML(){
   const t=today(),pl=plan(),c=pl.c,sk=streak();
-  const head=`<div class="page-head"><div><p class="eyebrow">${esc(new Date().toLocaleDateString('ru-RU',{weekday:'long',day:'numeric',month:'long'}))}</p><h1>Сегодня</h1></div>
+  const head=`<div class="page-head"><div><p class="eyebrow"${night()?` title="${NIGHT}"`:''}>${esc(fmtDate(t,{weekday:'long',day:'numeric',month:'long'}))}${night()?' · до 4 утра':''}</p><h1>Сегодня</h1></div>
    <div class="streak ${sk?'':'off'}" title="Дней подряд с занятиями">${ic('flame')}<span>${sk?nDays(sk)+' подряд':'Серия: 0'}</span></div></div>`;
   if(!S.started){
     return head+storageNotice()+`<section class="card">
@@ -251,7 +254,7 @@ function homeHTML(){
     const inProg=pl.in0.length>0||pl.learned>0||(S.hist[t]&&S.hist[t][1]>0);
     planCard=`<section class="card"><h2>План на сегодня</h2><ul class="plan-list">
       <li class="plan-row ${due?'':'done'}"><span class="plan-ic">${ic(due?'clock':'check')}</span><div class="plan-txt"><b>Повторение</b><span>${due?'Слова, которым пришёл срок':c.learning?'Всё повторено':'Пока нечего повторять'}</span></div><div class="plan-n">${due||'—'}</div></li>
-      <li class="plan-row ${left?'':'done'}"><span class="plan-ic">${ic(left?'plus':'check')}</span><div class="plan-txt"><b>Новые слова</b><span>${left?(pl.in0.length?'Урок начат — можно продолжить':'Отбор и урок'):'Норма выполнена'}</span></div><div class="plan-n">${pl.learned}<small> из ${pl.goal}</small></div></li>
+      <li class="plan-row ${left?'':'done'}"><span class="plan-ic">${ic(left?'plus':'check')}</span><div class="plan-txt"><b>Новые слова</b><span>${left?(pl.in0.length?'Урок начат — можно продолжить':c.queued>=pl.need?'Урок по словам из очереди':'Отбор и урок'):'Норма выполнена'}</span></div><div class="plan-n">${pl.learned}<small> из ${pl.goal}</small></div></li>
     </ul>
     <button class="btn primary big" data-act="lesson">${inProg?'Продолжить':'Начать занятие'} ${ic('arrow')}</button>
     ${due&&left?`<div class="plan-foot"><button class="link" data-act="new">Сразу к новым словам</button></div>`:''}</section>`;
@@ -498,12 +501,26 @@ function sortHTML(){
 }
 function sortMark(know){
   const s=sortS,w=sortCur();if(!s||!w)return;
-  S.p[w.en]=[know?K:Q,0,0,0];S.started=true;if(!S.first)S.first=today();s.undo.push(w.en);know?s.known++:s.picked++;s.shown=false;save();
+  const t=today();S.p[w.en]=[know?K:Q,0,0,0];S.started=true;if(!S.first)S.first=t;hist(t)[5]++;s.undo.push([w.en,t]);know?s.known++:s.picked++;s.shown=false;save();
   if(s.target&&s.picked>=s.target)return sortDone();
   render();
 }
-function sortUndo(){const s=sortS,en=s&&s.undo.pop();if(!en)return;const p=S.p[en];if(p){p[0]===K?s.known--:s.picked--;delete S.p[en]}s.shown=false;save();render()}
-function sortDone(){const a=sortS&&sortS.after;sortS=null;if(a)a();else go('home')}
+function sortUndo(){const s=sortS,u=s&&s.undo.pop();if(!u)return;const p=S.p[u[0]],h=S.hist[u[1]];if(p){p[0]===K?s.known--:s.picked--;delete S.p[u[0]];if(h&&h[5]>0)h[5]--}s.shown=false;save();render()}
+function sortDone(){const a=sortS&&sortS.after;if(a){sortS=null;a()}else sortLeave()}
+// Выход из свободной сортировки: показываем, что она дала, и сразу предлагаем урок —
+// сами слова учатся только в уроках, и без этого экрана сортировку легко принять за занятие.
+function sortLeave(){
+  const s=sortS;sortS=null;
+  if(!s||s.after||!(s.known+s.picked))return go('home');
+  const c=counts(),pl=plan(),n=s.known+s.picked;
+  const lead=c.queued||pl.in0.length?`Сортировка только отбирает слова, учатся они в уроках. Слова из очереди пойдут в уроки по порядку, по ${S.set.perDay} в день.`
+    :'Все отмеченные слова вы знаете — в уроки они не попадут.';
+  let nextBtn=null;
+  if(c.due)nextBtn=['lesson','Начать занятие'];
+  else if(pl.left)nextBtn=['new',pl.in0.length?'Продолжить урок':`Начать урок · ${nWords(pl.left)}`];
+  sum={title:`Разобрано: ${nWords(n)}`,lead,facts:[[s.known,'знаю'],[s.picked,'учить'],[c.queued,'в очереди на изучение']],wrong:[],nextBtn,learned:[]};
+  view='summary';render();arm();window.scrollTo(0,0);
+}
 function bindSwipe(){
   const c=$('#scard');if(!c||!window.PointerEvent)return;let x0=null,dx=0;
   c.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;x0=e.clientX;dx=0;c.classList.add('drag');try{c.setPointerCapture(e.pointerId)}catch(_){}});
@@ -571,15 +588,24 @@ function wordModal(w,editing){
 
 /* ================= stats ================= */
 function statsHTML(){
-  const c=counts(),t=today(),sk=streak(),best=Math.max(bestStreak(),sk);
+  const c=counts(),pl=plan(),t=today(),sk=streak(),best=Math.max(bestStreak(),sk);
   const fact=(n,l)=>`<div class="fact"><b>${n}</b><span>${l}</span></div>`;
-  let ok=0,bad=0;for(let d=t-6;d<=t;d++){const h=S.hist[d];if(h){ok+=h[2];bad+=h[3]}}
+  const H=d=>S.hist[d]||[0,0,0,0,0,0],td=H(t),wk=[0,0,0,0];
+  let ok=0,bad=0;for(let d=t-6;d<=t;d++){const h=H(d);ok+=h[2];bad+=h[3];wk[0]+=h[0];wk[1]+=h[1];wk[2]+=h[5]||0;wk[3]+=h[4]||0}
+  const sorted=W.length-c.unseen,waiting=c.queued+c.inLesson;
+  // пока не было ни одного урока, почти все числа — нули: объясняем почему и ведём к уроку
+  const lessons=c.learning+c.mastered>0||Object.keys(S.hist).some(d=>active(+d));
+  const none=lessons?'':`<div class="notice" id="stats-none">${ic('info')}<div><b>Уроков пока не было — поэтому здесь нули.</b> ${sorted?`Сортировка только отбирает слова: вы разобрали ${sorted}, из них ${c.known} знаете, ${waiting} ${plural(waiting,['ждёт','ждут','ждут'])} урока. `:''}Цифры начнут меняться после первого урока.${c.due||pl.left?`<div class="btn-row" style="margin-top:10px"><button class="btn sm primary" data-act="${S.started?'lesson':'first-start'}">Начать урок</button></div>`:''}</div></div>`;
+  const cell=n=>`<td class="num${n?'':' z'}">${n}</td>`;
+  const did=[['Новых слов в уроках',td[0],wk[0]],['Повторено слов',td[1],wk[1]],['Разобрано в сортировке',td[5]||0,wk[2]],['Заданий в тренировке',td[4]||0,wk[3]]]
+    .map(r=>`<tr><th scope="row">${r[0]}</th>${cell(r[1])}${cell(r[2])}</tr>`).join('');
   // calendar: 12 weeks, columns = weeks starting Monday
   const dow=(dayDate(t).getDay()+6)%7,start=t-dow-7*11;let cal='';
   for(let d=start;d<start+84;d++){
     if(d>t){cal+='<i class="fut"></i>';continue}
-    const h=S.hist[d],n=h?h[0]+h[1]+(h[4]||0):0,l=n===0?'':n<10?'l1':n<30?'l2':'l3';
-    cal+=`<i class="${l}${d===t?' today':''}" title="${esc(fmtDate(d))}: ${h?`новых ${h[0]}, повторено ${h[1]}`:'нет занятий'}"></i>`;
+    const h=S.hist[d],n=h?h[0]+h[1]+(h[4]||0):0,so=h?h[5]||0:0,l=n===0?(so?'s':''):n<10?'l1':n<30?'l2':'l3';
+    const what=n+so?`новых ${h[0]}, повторено ${h[1]}${h[4]?`, в тренировке ${h[4]}`:''}${so?`, разобрано ${so}`:''}`:'нет занятий';
+    cal+=`<i class="${l}${d===t?' today':''}" title="${esc(fmtDate(d))}: ${what}"></i>`;
   }
   // forecast
   const fc=[0,0,0,0,0,0,0];
@@ -590,12 +616,16 @@ function statsHTML(){
   const smx=Math.max(1,...stg);
   const stH=[1,2,3,4,5,6].map(i=>`<div class="stage"><span class="muted">${nDays(INT[i])}</span><div class="track"><i style="width:${Math.round(stg[i]/smx*100)}%"></i></div><b>${stg[i]}</b></div>`).join('');
   return `<div class="page-head"><div><p class="eyebrow">Как идёт дело</p><h1>Статистика</h1></div></div>
-  <div class="statgrid">${fact(c.mastered,'выучено')}${fact(c.learning,'в изучении')}${fact(sk,plural(sk,['день подряд','дня подряд','дней подряд']))}${fact(ok+bad?Math.round(ok/(ok+bad)*100)+'%':'—','верных за 7 дней')}</div>
+  ${none}
+  <div class="statgrid">${fact(c.learning,'в изучении')}${fact(c.mastered,'выучено')}${fact(sk,plural(sk,['день подряд','дня подряд','дней подряд']))}${fact(ok+bad?Math.round(ok/(ok+bad)*100)+'%':'—','верных за 7 дней')}</div>
+  <p class="muted small statnote">«В изучении» — слова, прошедшие урок. «Выучено» — слова, прошедшие все повторения: от урока до этого около четырёх месяцев. Серию дней продлевают уроки, повторения и тренировка.</p>
+  <section class="card"><h2>Что сделано</h2><table class="did"><thead><tr><td></td><th scope="col">Сегодня</th><th scope="col">За 7 дней</th></tr></thead><tbody>${did}</tbody></table>
+    ${night()?`<p class="muted small" style="margin-top:12px">${NIGHT} Сейчас идёт ${fmtDate(t,{weekday:'long',day:'numeric',month:'long'})}.</p>`:''}</section>
   <section class="card"><h2>Занятия за 12 недель</h2><div class="cal-wrap"><div class="cal-days"><span>пн</span><span></span><span>ср</span><span></span><span>пт</span><span></span><span>вс</span></div><div class="cal">${cal}</div></div>
-    <p class="muted small" style="margin-top:12px">Лучшая серия: ${nDays(best)}. Чем темнее клетка, тем больше слов в этот день.</p></section>
+    <p class="muted small" style="margin-top:12px">Лучшая серия: ${nDays(best)}. Чем темнее клетка, тем больше слов в этот день. Клетка с рамкой — день, когда была только сортировка.</p></section>
   <section class="card"><h2>Повторения на неделю вперёд</h2>${c.learning?`<div class="fc">${fcH}</div>`:`<p class="muted">Появятся после первого урока.</p>`}</section>
   <section class="card"><h2>Слова по интервалам</h2>${c.learning?`<div class="stages">${stH}</div><p class="muted small" style="margin-top:12px">Интервал — через сколько слово придёт снова. После 60 дней слово считается выученным.</p>`:`<p class="muted">Пока в изучении нет слов.</p>`}</section>
-  <section class="card"><h2>Весь список</h2><dl class="kv"><dt>Уже знали</dt><dd class="num">${c.known}</dd><dt>В очереди на изучение</dt><dd class="num">${c.queued}</dd><dt>Ещё не просмотрено</dt><dd class="num">${c.unseen}</dd></dl></section>`;
+  <section class="card"><h2>Весь список</h2><dl class="kv"><dt>Разобрано</dt><dd class="num">${sorted} из ${W.length}</dd><dt>Уже знали</dt><dd class="num">${c.known}</dd><dt>В очереди на изучение</dt><dd class="num">${c.queued}</dd><dt>Ещё не просмотрено</dt><dd class="num">${c.unseen}</dd></dl></section>`;
 }
 
 /* ================= settings ================= */
@@ -628,7 +658,7 @@ function settingsHTML(){
    и отдаёт всё это через window.__shell. Если файл открыт без оболочки, остаётся одна строка с номером версии. */
 const VER='__VERSION__';
 const SH=(()=>{try{const s=window.__shell;return s&&typeof s.info==='function'&&typeof s.use==='function'?s:null}catch(e){return null}})();
-const ver={busy:'',all:false};                    // busy: 'check' | 'latest' | 'use:<версия>' | 'restore'
+const ver={busy:'',all:false,open:false};                    // busy: 'check' | 'latest' | 'use:<версия>' | 'restore'
 const shInfo=()=>{try{const i=SH&&SH.info();return i&&!i.degraded&&Array.isArray(i.versions)&&i.versions.length?i:null}catch(e){return null}};
 const cmpVer=(a,b)=>{const x=String(a).split('.'),y=String(b).split('.');for(let i=0;i<Math.max(x.length,y.length);i++){const d=(+x[i]||0)-(+y[i]||0);if(d)return d}return 0};
 const dmy=d=>{const m=/^(\d{4})-(\d\d)-(\d\d)/.exec(d||'');return m?`${m[3]}.${m[2]}.${m[1]}`:''};
@@ -658,7 +688,7 @@ function versionHTML(){
     const on=v.v===run,tag=on?'<span class="badge m">работает сейчас</span>':v.needsProgram?'<span class="badge">нужна новая программа</span>':v.failed?'<span class="badge l">не запустилась</span>':v.v===latest?'<span class="badge">последняя</span>':'';
     const go=on||v.needsProgram?'':b('ver-use',ver.busy==='use:'+v.v?(v.downloaded?'Перехожу…':'Скачиваю…'):v.failed?'Попробовать снова':'Перейти','',`data-v="${esc(v.v)}" aria-label="Перейти на версию ${esc(v.v)}"`);
     return `<li class="${on?'on':''}"><div><div class="ver-top"><b>${esc(v.v)}</b>${dmy(v.date)?`<span class="muted small">${dmy(v.date)}</span>`:''}${tag}</div>${v.notes?`<p class="small muted">${esc(v.notes)}</p>`:''}${v.known?`<p class="small ver-known">Известные ошибки: ${esc(v.known)}</p>`:''}</div>${go}</li>`}).join('');
-  const nb=(i.backups||[]).length;
+  const nb=(i.backups||[]).length,nv=i.versions.length;
   return `<section class="card" id="ver-card"><h2>Версия и обновления</h2>
     <div class="${warn?'notice':'ver-status'}">${warn?ic('info'):''}<p>${text}</p>${act}</div>
     <div class="set" style="margin-top:14px">
@@ -666,10 +696,10 @@ function versionHTML(){
       <div class="set-row"><div><b>Проверка обновлений</b><small id="ver-check-text">${checkText}</small></div>${b('ver-check','Проверить сейчас')}</div>
       <div class="set-row"><div><b>Копии прогресса</b><small>${nb?`Программа сама делает копию перед обновлением и перед сменой версии. Сохранено копий: ${nb}.`:'Программа сама делает копию перед обновлением и перед сменой версии. Пока копий нет.'}</small></div>${nb?b('ver-backups','Показать'):''}</div>
     </div>
-    <h3 class="ver-h">Все версии</h3>
-    <p class="muted small">Можно перейти на любую и вернуться обратно. Прогресс при этом общий.</p>
+    <h3 class="ver-h"><button class="ver-toggle" data-act="ver-list" aria-expanded="${!!ver.open}" ${busy?'disabled':''}><span><b>Все версии</b><small>${nv} ${plural(nv,['версия','версии','версий'])} — можно перейти на любую и вернуться обратно</small></span>${ic('chev')}</button></h3>
+    ${ver.open?`<div id="ver-list"><p class="muted small">Прогресс при переходе общий.</p>
     <ul class="vers">${rows}</ul>
-    ${i.versions.length>list.length?`<button class="btn sm" data-act="ver-all" style="margin-top:10px">Показать все версии (${i.versions.length})</button>`:''}
+    ${nv>list.length?`<button class="btn sm" data-act="ver-all" style="margin-top:10px">Показать все версии (${nv})</button>`:''}</div>`:''}
   </section>`;
 }
 let verShown='';                                 // что сейчас нарисовано в разделе: без изменений его не перерисовываем, чтобы не сбить нажатие
@@ -753,7 +783,7 @@ const A={
   more(){const t=today();S.extra=[t,(S.extra&&S.extra[0]===t?S.extra[1]:0)+5];save();startNew()},
   sort(){if(!sortCur()){toast('Все слова уже разобраны');return}startSort(0,null)},
   'close-session'(){go('home')},
-  'close-sort'(){sortS=null;go('home')},
+  'close-sort'(){sortLeave()},
   'sort-finish'(){sortDone()},
   say(){cur&&speak(cur.task.w.show)},
   'say-slow'(){cur&&speak(cur.task.w.show,true)},
@@ -809,6 +839,7 @@ const A={
   'ver-latest'(){if(!shInfo()||ver.busy)return;ver.busy='latest';verRefresh();SH.useLatest().then(verWait,e=>{verDone();toast(String(e&&e.message||e))})},
   'ver-apply'(){location.reload()},
   'ver-all'(){ver.all=true;verRefresh()},
+  'ver-list'(){ver.open=!ver.open;verRefresh()},
   'ver-backups'(){backupsModal()},
   'ver-restore'(el){const id=el.dataset.id,t=+el.dataset.t;
     openModal(`<h2>Восстановить копию?</h2><p class="muted">Прогресс станет таким, каким был ${esc(whenText(t))}. Нынешний прогресс программа перед этим сохранит в отдельную копию.</p><div class="modal-actions inline"><button class="btn" data-act="ver-backups">Назад</button><button class="btn primary" data-act="ver-restore-yes" data-id="${esc(id)}">Восстановить</button></div>`)},
@@ -881,8 +912,8 @@ document.addEventListener('keydown',e=>{
 });
 window.addEventListener('storage',e=>{if(e.key===KEY&&view!=='session'&&view!=='sort'&&!modalOpen()){S=store.load();render()}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&(view==='home'||view==='stats'))render()});
-// открытая вкладка пережила ночь: обновить план на новый день
-setInterval(()=>{if(today()!==shownDay&&(view==='home'||view==='stats')&&!modalOpen())render()},60000);
+// открытая вкладка пережила ночь: обновить план на новый день (и пометку «до 4 утра» после полуночи)
+setInterval(()=>{if((today()!==shownDay||night()!==shownNight)&&(view==='home'||view==='stats')&&!modalOpen())render()},60000);
 
 if(SH)try{SH.on(verRefresh)}catch(e){}        // оболочка сообщает: проверка закончилась, версия скачалась
 window.__w3k={version:VER,set guard(v){guardMs=v;guardUntil=0},set ttsWait(v){ttsWait=v},get ttsDead(){return tts.dead},get S(){return S},get cur(){return cur},get ses(){return ses},get view(){return view},W,counts,plan,dueWords,checkTyped,distract,conflict};

@@ -22,7 +22,8 @@ const launch = async () => {
   await p.evaluate(() => { __w3k.guard = 0; });
   return { ctx, p };
 };
-const prog_ = p => p.evaluate(() => JSON.stringify([__w3k.S.p, __w3k.S.hist, __w3k.S.set]));
+// в записи дня с версии 1.4 шесть чисел (добавилось «разобрано в сортировке»): записи старых версий дополняются нулём
+const prog_ = p => p.evaluate(() => { const h = {}; for (const d in __w3k.S.hist) { h[d] = __w3k.S.hist[d].slice(); while (h[d].length < 6) h[d].push(0); } return JSON.stringify([__w3k.S.p, h, __w3k.S.set]); });
 const view = p => p.evaluate(() => __w3k.view);
 const ver = p => p.evaluate(() => window.__w3k.version || (document.body.innerText.match(/Версия ([\d.]+)/) || [])[1]);
 (async () => {

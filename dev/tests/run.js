@@ -255,7 +255,7 @@ async function suite(engine) {
     check((await p.textContent('#imp-msg')).includes('не файл прогресса'), 'чужой файл — понятная ошибка');
     await p.fill('#imp-text', '{"app":"words3000","data":{"p":{"__proto__":[1,1,1,1],"nosuchword":[1,1,1,1],"be":[99,0,0,0],"of":"x","to":[3,"5",null,2]},"set":{"perDay":9999,"theme":"<script>"},"hist":{"abc":[1],"5":[-3,2.6]}}}'); await p.click('[data-act=import-apply]');
     const s = await p.evaluate(() => ({ p: __w3k.S.p, per: __w3k.S.set.perDay, th: __w3k.S.set.theme, h: __w3k.S.hist }));
-    check(JSON.stringify(s.p) === '{"to":[3,5,0,2]}' && s.per === 50 && s.th === 'auto' && JSON.stringify(s.h) === '{"5":[0,3,0,0,0]}', 'мусор в загружаемых данных отбрасывается: ' + JSON.stringify(s));
+    check(JSON.stringify(s.p) === '{"to":[3,5,0,2]}' && s.per === 50 && s.th === 'auto' && JSON.stringify(s.h) === '{"5":[0,3,0,0,0,0]}', 'мусор в загружаемых данных отбрасывается: ' + JSON.stringify(s));
     await p.click('.tabbar [data-v=settings]'); await p.click('[data-act=import]');
     if (file) { await p.setInputFiles('#imp-file', file); await p.waitForFunction(() => __w3k.counts().mastered === 20, null, { timeout: 5000 }); }
     else { await p.fill('#imp-text', txt); await p.click('[data-act=import-apply]'); }
@@ -422,7 +422,8 @@ async function suite(engine) {
     await q.click('.tabbar [data-v=settings]'); await q.click('[data-act=step][data-d="1"]'); await q.click('[data-act=theme][data-v=dark]');
     const raw = await q.evaluate(k => localStorage.getItem(k), KEY);
     const exported = await q.evaluate(() => JSON.stringify({ app: 'words3000', v: 1, data: __w3k.S }));
-    const pick = s => { const d = JSON.parse(s); return JSON.stringify([d.p, d.tr, d.hist, d.set, d.first, d.backup, d.started, d.extra]); };
+    // с версии 1.4 в записи дня шесть чисел (добавилось «разобрано в сортировке»): старые записи дополняются нулём
+    const pick = s => { const d = JSON.parse(s); for (const k in d.hist) while (d.hist[k].length < 6) d.hist[k].push(0); return JSON.stringify([d.p, d.tr, d.hist, d.set, d.first, d.backup, d.started, d.extra]); };
     // 1) новый файл открыт в том же браузере: данные уже лежат в хранилище
     await q.goto(URL); await q.evaluate(([k, v]) => localStorage.setItem(k, v), [KEY, raw]); await reload(q);
     check(pick(await q.evaluate(() => JSON.stringify(__w3k.S))) === pick(raw), 'версия 1.1 читает хранилище версии 1.0 один в один');
@@ -451,8 +452,10 @@ async function suite(engine) {
       const q = await ctx.newPage(); q.on('pageerror', e => errors.push(e.message));
       await q.goto(URL); await q.evaluate(() => { __w3k.guard = 0; });
       await q.click('[data-act=nav][data-v=settings]:visible');
+      if (listOpen && await q.$('[data-act=ver-list]')) await q.click('[data-act=ver-list]');   // список версий свёрнут, пока его не раскроют
       return q;
     };
+    let listOpen = true;
     const card = q => q.$eval('#ver-card', e => e.innerText).catch(() => null);
     const cardShot = async (q, name) => { if (SHOTS) { fs.mkdirSync(path.join(__dirname, 'shots'), { recursive: true }); await q.locator('#ver-card').screenshot({ path: path.join(__dirname, 'shots', `${engine}-${name}.png`) }); } };
     const calls = q => q.evaluate(() => __sh.calls.slice());
@@ -468,6 +471,28 @@ async function suite(engine) {
     await q.context().close();
     q = await openSh({ boom: true });
     check(await card(q) === null && /^Версия/.test(await foot(q)), 'оболочка с ошибкой: раздела нет, приложение работает');
+    await q.context().close();
+
+    // список версий свёрнут и раскрывается по нажатию
+    listOpen = false;
+    q = await openSh({ latest: '1.3', versions: VLIST.slice(1).map((e, i) => Object.assign({}, e, { latest: i === 0 })), lastCheck: Date.now() - 60000 });
+    listOpen = true;
+    const tog = () => q.$eval('[data-act=ver-list]', b => ({ open: b.getAttribute('aria-expanded'), text: b.innerText.replace(/\s+/g, ' ').trim(), off: b.disabled, h: b.closest('#ver-card').offsetHeight }));
+    let g = await tog(); const closedH = g.h;
+    check(g.open === 'false' && !await q.$('.vers') && !await q.$('#ver-card [data-act=ver-use]'), 'список версий свёрнут: ни списка, ни кнопок перехода');
+    check(/^Все версии 4 версии — можно перейти на любую/.test(g.text), 'в свёрнутой строке — название и число версий: ' + g.text);
+    check(/Установлена версия 1\.3 — последняя/.test(await card(q)) && await q.$('[data-act=ver-check]') && await q.$('[data-act=ver-auto]'), 'состояние, проверка и автообновление видны и без списка');
+    await cardShot(q, '20-versions-closed');
+    await q.click('[data-act=ver-list]'); g = await tog();
+    check(g.open === 'true' && await q.$$eval('.vers li', a => a.length) === 4 && g.h > closedH + 150, 'нажатие раскрывает список');
+    await set(q, { lastCheck: Date.now() }); await q.waitForTimeout(80);
+    check((await tog()).open === 'true' && await q.$$eval('.vers li', a => a.length) === 4, 'раскрытый список не сворачивается, когда раздел обновляется сам');
+    await q.focus('[data-act=ver-list]'); await q.keyboard.press('Enter'); g = await tog();
+    check(g.open === 'false' && !await q.$('.vers') && g.h === closedH, 'второе нажатие (с клавиатуры) сворачивает обратно');
+    await q.click('[data-act=nav][data-v=home]:visible'); await q.click('[data-act=nav][data-v=settings]:visible');
+    check((await tog()).open === 'false', 'после возврата в настройки список свёрнут');
+    await set(q, { pinned: '1.2', running: '1.2' });
+    check(await q.$('.notice [data-act=ver-latest]') && !await q.$('.vers'), '«Вернуться к последней» доступна при свёрнутом списке');
     await q.context().close();
 
     // обычное состояние: последняя версия
@@ -595,6 +620,109 @@ async function suite(engine) {
     await q.context().close();
   });
 
+  await section('статистика: сортировка, первый урок, ночь до 4 утра', async () => {
+    // Случай пользователя: в час ночи разобрано 102 слова в сортировке, урока не было — «статистика не обновляется».
+    const q = await open({ width: 390, height: 844 }, { timezoneId: 'Europe/Moscow' });
+    const home = () => q.click('[data-act=nav][data-v=home]:visible');
+    const at = async (...a) => { offs.set(q, await q.evaluate(a => __setNow(...a), a)); await home(); };
+    const eyebrow = () => q.$eval('.page-head .eyebrow', e => e.textContent);
+    const stats = async () => {
+      await q.click('[data-act=nav][data-v=stats]:visible');
+      const r = await q.evaluate(() => ({
+        facts: Array.from(document.querySelectorAll('.statgrid .fact b'), b => b.textContent).join(),
+        did: Array.from(document.querySelectorAll('.did tbody tr'), r => Array.from(r.querySelectorAll('td'), t => t.textContent).join('/')).join(' '),
+        none: (document.querySelector('#stats-none') || {}).innerText || '',
+        kv: Array.from(document.querySelectorAll('.kv dd'), d => d.textContent).join(),
+        today: (c => c ? c.className.trim() + ' | ' + c.title : '')(document.querySelector('.cal i.today')),
+        marked: document.querySelectorAll('.cal i.s,.cal i.l1,.cal i.l2,.cal i.l3').length,
+        text: document.querySelector('main.page').innerText }));
+      await home(); return r;
+    };
+    const sum = () => q.$eval('.sum', e => ({ title: e.querySelector('h1').textContent, lead: e.querySelector('.lead').textContent, facts: Array.from(e.querySelectorAll('.fact b'), b => b.textContent).join(), btn: (b => b ? b.dataset.act + ':' + b.textContent.trim() : '')(e.querySelector('.btn.primary')) }));
+    const hist = () => q.evaluate(() => JSON.stringify(__w3k.S.hist));
+
+    await at(2026, 10, 15, 1, 0); await reload(q);
+    check(await eyebrow() === 'суббота, 14 ноября · до 4 утра', 'час ночи 15-го: в шапке идущий учебный день — ' + await eyebrow());
+    let r = await stats();
+    check(/Уроков пока не было/.test(r.none) && !/разобрали/.test(r.none) && r.facts === '0,0,0,—', 'до начала: объяснение вместо голых нулей');
+    await q.click('[data-act=nav][data-v=stats]:visible'); await q.click('#stats-none [data-act=first-start]');
+    check(await view(q) === 'sort', 'кнопка в объяснении ведёт к первому уроку (отбор слов)');
+    await q.click('.iconbtn[data-act=close-sort]');
+    check(await view(q) === 'home', 'отбор для урока закрыт крестиком без единого слова — главная');
+    await q.click('[data-act=sort]'); await q.click('.btn.sm[data-act=close-sort]');
+    check(await view(q) === 'home', 'сортировка закрыта без единого слова — сразу главная, без итога');
+
+    await q.click('[data-act=sort]');
+    for (let i = 0; i < 102; i++) await q.click(i < 57 ? '[data-act=sort-know]' : '[data-act=sort-learn]');
+    await q.click('[data-act=sort-learn]'); await q.click('[data-act=sort-undo]');
+    check(await hist() === '{"20771":[0,0,0,0,0,102]}', 'сортировка записана в историю дня, отмена её уменьшает: ' + await hist());
+    await q.click('.btn.sm[data-act=close-sort]');
+    let m = await view(q) === 'summary' ? await sum() : {};
+    check(m.title === 'Разобрано: 102 слова' && m.facts === '57,45,45' && /учатся они в уроках/.test(m.lead) && m.btn === 'new:Начать урок · 10 слов', 'после сортировки — итог и кнопка урока: ' + JSON.stringify(m));
+    await shot(q, '30-sort-summary');
+    await q.click('.sum [data-act=nav][data-v=home]');
+    check(/Урок по словам из очереди/.test(await q.$eval('.plan-list', e => e.innerText)) && (await q.textContent('.streak')).trim() === 'Серия: 0', 'главная: урок по словам из очереди; сортировка серию не начинает');
+    r = await stats();
+    check(/вы разобрали 102, из них 57 знаете, 45 ждут урока/.test(r.none), 'статистика объясняет: слова отобраны, уроков не было');
+    check(r.did === '0/0 0/0 102/102 0/0' && r.kv === '102 из 3000,57,45,2898', 'сортировка видна в «Что сделано» и в общем списке: ' + r.did + ' · ' + r.kv);
+    check(/^s today \| 14 ноября: новых 0, повторено 0, разобрано 102$/.test(r.today) && r.marked === 1, 'день сортировки отмечен в календаре рамкой: ' + r.today);
+    check(/Сейчас идёт суббота, 14 ноября/.test(r.text), 'ночью статистика говорит, какой учебный день идёт');
+    if (SHOTS) { await q.click('[data-act=nav][data-v=stats]:visible'); await q.screenshot({ path: path.join(__dirname, 'shots', `${engine}-31-stats-sorted.png`), fullPage: true }); }
+
+    await q.click('[data-act=nav][data-v=stats]:visible'); await q.click('#stats-none [data-act=lesson]');
+    check(await view(q) === 'session' && (await counts(q)).inLesson === 10, 'кнопка «Начать урок» в статистике запускает урок из очереди');
+    await runSession(q); await q.click('.sum [data-act=nav][data-v=home]');
+    r = await stats();
+    check(r.none === '' && r.facts === '10,0,1,100%' && r.did === '10/10 0/0 102/102 0/0' && r.kv === '102 из 3000,57,35,2898', 'после первого урока числа меняются: ' + [r.facts, r.did, r.kv].join(' · '));
+    check(/^l2 today \| 14 ноября: новых 10, повторено 0, разобрано 102$/.test(r.today), 'день урока закрашен: ' + r.today);
+    check(/\n0\nсегодня\n10\nвс\n/.test(r.text), 'ночью повторения стоят на «вс» — на следующий учебный день');
+
+    await at(2026, 10, 15, 12, 0);
+    check(await eyebrow() === 'воскресенье, 15 ноября', 'днём в шапке обычная дата');
+    r = await stats();
+    check(r.did === '0/10 0/0 0/102 0/0' && !/Сейчас идёт/.test(r.text) && /^today \| 15 ноября: нет занятий$/.test(r.today) && r.marked === 1, 'новый день: «сегодня» обнулилось, неделя помнит: ' + r.did + ' · ' + r.today);
+    await q.click('[data-act=lesson]'); await runSession(q); await q.click('.sum [data-act=nav][data-v=home]');
+    r = await stats();
+    check(r.facts === '10,0,2,100%' && r.did === '0/10 10/10 0/102 0/0', 'после повторения: ' + r.facts + ' · ' + r.did);
+    await q.click('[data-act=nav][data-v=practice]'); await q.click('[data-act=prac][data-k=n][data-v="10"]'); await q.click('[data-act=prac-start]'); await runSession(q); await q.click('.sum [data-act=nav][data-v=home]');
+    r = await stats();
+    check(/ 10\/10$/.test(r.did) && /в тренировке 10$/.test(r.today), 'тренировка тоже видна: ' + r.did + ' · ' + r.today);
+
+    // через два дня (пришёл срок повторения): только сортировка — серию не продлевает, в календаре рамка
+    await at(2026, 10, 18, 12, 0);
+    await q.click('[data-act=sort]'); for (let i = 0; i < 3; i++) await q.click('[data-act=sort-know]'); await q.click('.iconbtn[data-act=close-sort]');
+    m = await sum();
+    check(m.title === 'Разобрано: 3 слова' && m.facts === '3,0,35' && m.btn === 'lesson:Начать занятие', 'итог сортировки при ждущих повторениях ведёт к занятию: ' + JSON.stringify(m));
+    await q.keyboard.press('Enter');
+    check(await view(q) === 'session' && await q.evaluate(() => __w3k.ses.kind) === 'review', 'Enter на итоге сортировки начинает занятие');
+    await q.click('[data-act=close-session]');
+    r = await stats();
+    check(r.facts.split(',')[2] === '0' && /^s today \| 18 ноября: новых 0, повторено 0, разобрано 3$/.test(r.today) && r.marked === 3, 'сортировка без урока серию не продлевает, но в календаре видна: ' + r.facts + ' · ' + r.today);
+    await reload(q);
+    check((await invariants(q)).length === 0 && await q.evaluate(() => Object.values(__w3k.S.hist).every(h => h.length === 6)), 'после перезагрузки данные целы, в записи дня шесть чисел');
+
+    // прогресс из версии 1.3 (пять чисел в записи дня) читается и считается
+    await q.evaluate(k => { const d = JSON.parse(localStorage.getItem(k)); for (const x in d.hist) d.hist[x].length = 5; localStorage.setItem(k, JSON.stringify(d)); }, KEY);
+    await reload(q); r = await stats();
+    check(r.did === '0/10 0/10 0/0 0/10' && r.kv === '105 из 3000,60,35,2895' && await q.evaluate(() => Object.values(__w3k.S.hist).every(h => h.length === 6 && h[5] === 0)), 'запись дня из версии 1.3 читается: сортировка по дням неизвестна, остальное на месте — ' + r.did + ' · ' + r.kv);
+
+    // всё, что отмечено, — «знаю»: в итоге нет обещания уроков по очереди
+    const f = await open({ width: 390, height: 844 });
+    await f.click('[data-act=first-start]'); await f.click('[data-act=close-sort]'); await f.click('[data-act=sort]');
+    await f.click('[data-act=sort-know]'); await f.click('[data-act=sort-know]'); await f.click('.btn.sm[data-act=close-sort]');
+    m = await f.$eval('.sum', e => e.innerText);
+    check(/Разобрано: 2 слова/.test(m) && /Все отмеченные слова вы знаете/.test(m) && /Начать урок · 10 слов/.test(m), 'итог сортировки, когда всё знакомо');
+    await shot(f, '32-sort-summary-phone');
+    // всплывающая подсказка на телефоне ложится поверх кнопки «Закрыть»: нажатие должно проходить сквозь неё
+    await f.click('.sum [data-act=new]'); await runSort(f, () => false);
+    for (let n = 0; n < 200; n++) { const c = await st(f); if (!c || (c.t === 'listen' && !c.ans)) break; await answer(f); }
+    await f.click('[data-act=no-sound]');
+    const over = await f.evaluate(() => { const b = document.querySelector('[data-act=close-session]').getBoundingClientRect(), t = document.querySelector('.toast'); if (!t) return null; const r = t.getBoundingClientRect(); return r.left < b.right && r.top < b.bottom && r.bottom > b.top; });
+    await f.click('[data-act=close-session]', { timeout: 1500 }).catch(() => { });
+    check(over === true && await view(f) === 'home', 'подсказка лежит поверх кнопки «Закрыть», но нажатия не перехватывает: кнопка срабатывает сразу');
+    await f.context().close(); await q.context().close();
+  });
+
   await section('без хранилища (окно предпросмотра)', async () => {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } }); const q = await ctx.newPage(); const e2 = [];
     q.on('pageerror', e => e2.push(e.message));
@@ -661,12 +789,12 @@ async function suite(engine) {
       const btn = await q.$('[data-act=lesson],[data-act=more]');
       if (!btn) continue;
       await btn.click(); log.lessons++;
-      let guard = 0;
+      let guard = 0;                                       // после верного ответа занятие может закончиться само раньше клика по «Закрыть» — это не ошибка
       while (await view(q) !== 'home' && guard++ < 1500) {
         const v = await view(q);
         if (v === 'sort') { if (!await q.$('[data-act=sort-know]')) { await q.click('[data-act=sort-finish]'); continue; } const r = rnd(); if (r < .02) { await q.click('[data-act=close-sort]'); log.exits++; } else await q.click(r < .45 ? '[data-act=sort-know]' : '[data-act=sort-learn]'); log.sorts++; }
         else if (v === 'summary') { const b = await q.$$('.sum .modal-actions .btn'); await b[rnd() < .7 ? 0 : b.length - 1].click(); }
-        else { const c = await st(q); const r = rnd(); if (r < .012) { await q.click('[data-act=close-session]'); log.exits++; } else if (c && c.t === 'intro' && r < .08) await q.click('[data-act=intro-known]'); else if (c && c.t === 'listen' && !c.ans && r < .1) await q.click('[data-act=no-sound]'); else { await answer(q, { wrong: rnd() < .22, kbd: rnd() < .5 }); log.answers++; } }
+        else { const c = await st(q); const r = rnd(); if (r < .012) { await q.click('[data-act=close-session]', { timeout: 5000 }).catch(async e => { if (await view(q) === 'session') throw e; }); log.exits++; } else if (c && c.t === 'intro' && r < .08) await q.click('[data-act=intro-known]'); else if (c && c.t === 'listen' && !c.ans && r < .1) await q.click('[data-act=no-sound]'); else { await answer(q, { wrong: rnd() < .22, kbd: rnd() < .5 }); log.answers++; } }
       }
       const inv = await invariants(q);
       if (inv.length) { check(false, `день ${d}: ${inv.slice(0, 3).join('; ')}`); break; }

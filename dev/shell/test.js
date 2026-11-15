@@ -21,9 +21,11 @@ let passed = 0, failed = 0;
 const check = (c, msg) => { if (c) passed++; else { failed++; console.log('    ✗ ' + msg); } };
 
 /* ---------- версии ---------- */
+// текущая версия приложения — из dev/src/build.py: раздел с настоящей оболочкой проверяет именно её
+const CUR = fs.readFileSync(path.join(ROOT, 'dev', 'src', 'build.py'), 'utf8').match(/^VERSION = '([\d.]+)'/m)[1], CURRE = CUR.replace(/\./g, '\\.');
 const real = v => fs.readFileSync(path.join(ROOT, 'versions', `english-words-v${v}.html`));
 const fake = v => Buffer.from(real('1.2').toString('utf8').replace('Версия 1.2', 'Версия ' + v), 'utf8');
-const fake13 = v => Buffer.from(real('1.3').toString('utf8').replace('name="app-version" content="1.3"', `name="app-version" content="${v}"`).replace("const VER='1.3'", `const VER='${v}'`).replace('Версия 1.3', 'Версия ' + v), 'utf8');   // «новая версия» с разделом выбора версии
+const fake13 = v => Buffer.from(real(CUR).toString('utf8').replace(`name="app-version" content="${CUR}"`, `name="app-version" content="${v}"`).replace(`const VER='${CUR}'`, `const VER='${v}'`).replace('Версия ' + CUR, 'Версия ' + v), 'utf8');   // «новая версия» с разделом выбора версии
 const broken = v => Buffer.from(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>сломанная</title></head><body><p>Версия ${v}</p><!--${'x'.repeat(1200)}--><script>throw new Error('сломанная версия')</script></body></html>`, 'utf8');
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 function manifest(files, latest, extra = {}) {
@@ -309,31 +311,35 @@ async function act(p, fn, arg) {                  // действие, посл�
       check(e.errors.length === 0, 'без ошибок на странице: ' + e.errors.join('; '));
     });
 
-    await section('приложение 1.3: раздел «Версия и обновления» с настоящей оболочкой', async mk => {
-      const R = real('1.3'), ALL = Object.assign({}, V, { '1.3': R });
+    await section(`приложение ${CUR}: раздел «Версия и обновления» с настоящей оболочкой`, async mk => {
+      const R = real(CUR), ALL = Object.assign({}, V, { [CUR]: R });
       const e = mk(); buildShell(R, [A.url], e.file);
-      const TEXT = { '1.3': { notes: 'Автообновление и выбор версии в настройках.' }, '1.2': { notes: 'Программа для Windows. Прогресс можно загрузить прямо с первого экрана.' },
+      const TEXT = { [CUR]: { notes: 'Автообновление и выбор версии в настройках.' }, '1.2': { notes: 'Программа для Windows. Прогресс можно загрузить прямо с первого экрана.' },
         '1.1': { date: '2026-11-15', notes: 'Исправления по итогам полной проверки: управление, озвучка, граница суток.' },
         '1.0': { date: '2026-11-14', notes: 'Первая версия.', known: 'серия дней могла сбрасываться' } };
-      A.set(ALL, '1.3', TEXT);
+      A.set(ALL, CUR, TEXT);
       let p = await e.open(); await learn(p);
       await p.click('[data-act=sort]'); for (let k = 0; k < 70; k++) await p.click('[data-act=sort-know]'); await p.click('.btn[data-act=close-sort]');
+      if (await p.$('.sum [data-act=nav][data-v=home]')) await p.click('.sum [data-act=nav][data-v=home]');      // с 1.4 после сортировки показывается итог
       await sleep(500); const before = await progress(p); await idle(p);
-      const settings = async () => { await p.evaluate(() => { __w3k.guard = 0; }); await p.locator('[data-act=nav][data-v=settings]:visible').first().click(); await p.evaluate(() => { __w3k.guard = 0; }); };
+      const settings = async () => { await p.evaluate(() => { __w3k.guard = 0; }); await p.locator('[data-act=nav][data-v=settings]:visible').first().click(); await p.evaluate(() => { __w3k.guard = 0; });
+        if (await p.$('[data-act=ver-list][aria-expanded=false]')) await p.click('[data-act=ver-list]'); };                 // с 1.4 список версий свёрнут
       const card = () => p.$eval('#ver-card', c => c.innerText);
       const clickReload = async sel => { await p.evaluate(() => { window.__old = true; }); await p.click(sel); await p.waitForFunction(() => !window.__old && !!window.__shell, null, { timeout: 15000 }); await ready(p); };
       const toastHas = re => p.waitForFunction(s => new RegExp(s).test((document.querySelector('.toast') || {}).textContent || ''), re.source, { timeout: 8000 }).then(() => true, () => false);
 
-      check(await p.evaluate(() => __w3k.version) === '1.3' && (await info(p)).running === '1.3', 'работает версия 1.3');
+      check(await p.evaluate(() => __w3k.version) === CUR && (await info(p)).running === CUR, 'работает версия ' + CUR);
+      await p.evaluate(() => { __w3k.guard = 0; }); await p.locator('[data-act=nav][data-v=settings]:visible').first().click();
+      check(await p.$('[data-act=ver-list][aria-expanded=false]') && !await p.$('.vers') && /Все версии\s+4 версии/.test(await card()), 'список версий в настройках свёрнут, в строке — их число');
       await settings(); let t = await card();
-      check(/Установлена версия 1\.3 — последняя/.test(t) && /Последняя проверка — сегодня в \d\d:\d\d/.test(t), 'в настройках: «Установлена версия 1.3 — последняя» и время проверки');
-      check(await p.$$eval('.vers li', a => a.map(l => l.querySelector('b').textContent).join()) === '1.3,1.2,1.1,1.0' && /Известные ошибки: серия дней/.test(t), 'список версий с GitHub показан в настройках, у 1.0 — известные ошибки');
+      check(new RegExp('Установлена версия ' + CURRE + ' — последняя').test(t) && /Последняя проверка — сегодня в \d\d:\d\d/.test(t), `в настройках: «Установлена версия ${CUR} — последняя» и время проверки`);
+      check(await p.$$eval('.vers li', a => a.map(l => l.querySelector('b').textContent).join()) === CUR + ',1.2,1.1,1.0' && /Известные ошибки: серия дней/.test(t), 'список версий с GitHub показан в настройках, у 1.0 — известные ошибки');
       await cardShot(p, engine + '-settings');
 
       await p.click('[data-act=ver-use][data-v="1.0"]'); await clickReload('.modal [data-act=ver-use-yes]');
       check((await info(p)).running === '1.0' && await appVersion(p) === '1.0' && await p.$('#shell-bar') && await progress(p) === before, 'кнопка «Перейти» у 1.0: открылась 1.0 с полосой наверху, прогресс тот же');
       await clickReload('#shell-bar button');
-      check((await info(p)).running === '1.3' && !await p.$('#shell-bar') && await progress(p) === before, 'из 1.0 обратно: снова 1.3, прогресс тот же');
+      check((await info(p)).running === CUR && !await p.$('#shell-bar') && await progress(p) === before, `из 1.0 обратно: снова ${CUR}, прогресс тот же`);
       await settings();
       check(/Сохранено копий: 2/.test(await card()), 'в настройках видно, что сделаны две копии прогресса');
 
@@ -344,11 +350,11 @@ async function act(p, fn, arg) {                  // действие, посл�
       check((await info(p)).running === '9.4' && await p.evaluate(() => __w3k.version) === '9.4' && await progress(p) === before, '«Включить сейчас»: работает 9.4, прогресс тот же');
       check(/обновлено до версии 9\.4/.test(await p.evaluate(() => (document.getElementById('shell-toast') || {}).textContent || '')), 'показана заметка об обновлении');
 
-      await settings(); await p.click('[data-act=ver-use][data-v="1.3"]'); await clickReload('.modal [data-act=ver-use-yes]');
+      await settings(); await p.click(`[data-act=ver-use][data-v="${CUR}"]`); await clickReload('.modal [data-act=ver-use-yes]');
       let i = await info(p);
-      check(i.running === '1.3' && i.pinned === '1.3' && !await p.$('#shell-bar'), 'из 9.4 на 1.3: работает 1.3, полосы оболочки нет (в 1.3 есть свой раздел)');
+      check(i.running === CUR && i.pinned === CUR && !await p.$('#shell-bar'), `из 9.4 на ${CUR}: работает ${CUR}, полосы оболочки нет (в приложении есть свой раздел)`);
       await settings();
-      check(/Вы пользуетесь версией 1\.3, последняя — 9\.4\. Автообновление приостановлено/.test(await card()), 'в настройках 1.3 написано, что автообновление приостановлено');
+      check(new RegExp('Вы пользуетесь версией ' + CURRE + ', последняя — 9\\.4\\. Автообновление приостановлено').test(await card()), 'в настройках написано, что автообновление приостановлено');
       await cardShot(p, engine + '-settings-pinned');
       await clickReload('[data-act=ver-latest]');
       i = await info(p);
