@@ -291,7 +291,10 @@ button:disabled{cursor:default}
 .switch[aria-checked="true"]{background:var(--accent);box-shadow:none}
 .switch[aria-checked="true"]::after{transform:translateX(20px)}
 .switch:disabled{opacity:.55}
-select.sel{min-height:44px;border-radius:10px;border:1px solid var(--line);background:var(--surface);padding:0 10px;max-width:100%}
+select.sel{min-height:44px;border-radius:10px;border:1px solid var(--line);background:var(--surface);padding:0 10px;max-width:100%;min-width:0;text-overflow:ellipsis}
+/* 1.5: длинное имя голоса не раздвигает строку настроек шире экрана */
+.set-row{min-width:0}
+.set-row > .btn-row{max-width:100%;min-width:0}
 .btn-row{display:flex;gap:10px;flex-wrap:wrap}
 
 /* ---------- modal & toast ---------- */

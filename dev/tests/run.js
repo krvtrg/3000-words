@@ -42,6 +42,53 @@ const TTS = `(()=>{try{Object.defineProperty(window.speechSynthesis,'speak',{con
 
 // Подставная оболочка программы: то же устройство window.__shell, что в dev/shell/shell.js, но без сети и хранилища.
 // Тест меняет window.__sh.st и зовёт __sh.emit(); вызовы приложения копятся в __sh.calls.
+// Полная подмена синтеза речи с набором голосов: в безголовых браузерах голосов нет, а настоящему
+// SpeechSynthesisUtterance чужой голос не назначить. Режимы window.__ttsMode:
+//   ok — всё звучит; net — сетевые голоса отвечают ошибкой; netsilent — сетевые молчат;
+//   stall — после первой фразы очередь встаёт; cut — как stall, но только у сетевых голосов.
+//   hang — фраза начинается и не заканчивается.
+const TTS_FULL = voices => `(()=>{try{
+  const V=${JSON.stringify(voices)};let q=[],cur=null,batchSaid=0;const said=[];window.__said=said;window.__cancels=0;
+  const mode=()=>window.__ttsMode||'ok';
+  const next=()=>{ if(cur||!q.length)return; const u=q.shift(),m=mode(),net=u.voice&&u.voice.localService===false; cur=u;
+    const fin=()=>{ if(cur!==u)return; cur=null; setTimeout(next,5) };
+    if((m==='net'||m==='netsilent')&&net){ if(m==='net')setTimeout(()=>{ if(cur!==u)return; u.onerror&&u.onerror({error:'synthesis-failed'}); fin() },10); return }
+    if((m==='stall'||(m==='cut'&&net))&&batchSaid>=1)return;                 // очередь встала: ни начала, ни ошибки
+    if(m==='silent')return;
+    if(m==='error'){ setTimeout(()=>{ if(cur!==u)return; u.onerror&&u.onerror({error:'synthesis-failed'}); fin() },10); return }
+    batchSaid++; said.push({t:u.text,v:u.voice?u.voice.name:null,rate:u.rate,at:Date.now()});
+    if(m==='hang'){ setTimeout(()=>{ if(cur===u&&u.onstart)u.onstart({}) },5); return }                     // началась и не закончилась
+    setTimeout(()=>{ if(cur!==u)return; u.onstart&&u.onstart({}); setTimeout(()=>{ if(cur!==u)return; u.onend&&u.onend({}); fin() },window.__ttsDur||25) },5) };
+  const fake={get speaking(){return !!cur},get pending(){return q.length>0},paused:false,
+    speak(u){if(!cur&&!q.length)batchSaid=0;q.push(u);setTimeout(next,0)},
+    cancel(){window.__cancels++;const u=cur;q=[];cur=null;batchSaid=0;if(u&&u.onerror)setTimeout(()=>u.onerror({error:'interrupted'}),0)},
+    resume(){},pause(){},getVoices(){return V},addEventListener(){},removeEventListener(){}};
+  Object.defineProperty(window,'speechSynthesis',{configurable:true,get(){return fake}});
+  window.SpeechSynthesisUtterance=function(t){this.text=t;this.rate=1;this.voice=null;this.lang=''};
+}catch(e){window.__ttsMockError=String(e)}})();`;
+const mv = (name, lang, local) => ({ name, lang, localService: !!local, default: false, voiceURI: name });
+const nat = (n, lang, where) => mv(`Microsoft ${n} Online (Natural) - English (${where})`, lang, false);
+// Edge в Windows: встроенные голоса системы и два десятка сетевых «Online (Natural)» для всех стран
+const V_EDGE = [
+  mv('Microsoft David - English (United States)', 'en-US', true), mv('Microsoft Mark - English (United States)', 'en-US', true), mv('Microsoft Zira - English (United States)', 'en-US', true),
+  mv('Microsoft Hazel - English (United Kingdom)', 'en-GB', true), mv('Microsoft Irina - Russian (Russia)', 'ru-RU', true), mv('Microsoft Pavel - Russian (Russia)', 'ru-RU', true),
+  nat('Natasha', 'en-AU', 'Australia'), nat('William', 'en-AU', 'Australia'), nat('Clara', 'en-CA', 'Canada'), nat('Liam', 'en-CA', 'Canada'),
+  nat('Neerja', 'en-IN', 'India'), nat('Prabhat', 'en-IN', 'India'), nat('Connor', 'en-IE', 'Ireland'), nat('Emily', 'en-IE', 'Ireland'),
+  nat('Libby', 'en-GB', 'United Kingdom'), nat('Maisie', 'en-GB', 'United Kingdom'), nat('Ryan', 'en-GB', 'United Kingdom'), nat('Sonia', 'en-GB', 'United Kingdom'), nat('Thomas', 'en-GB', 'United Kingdom'),
+  nat('Ana', 'en-US', 'United States'), nat('Andrew', 'en-US', 'United States'), nat('AndrewMultilingual', 'en-US', 'United States'), nat('Aria', 'en-US', 'United States'),
+  nat('Ava', 'en-US', 'United States'), nat('AvaMultilingual', 'en-US', 'United States'), nat('Brian', 'en-US', 'United States'), nat('Christopher', 'en-US', 'United States'),
+  nat('Emma', 'en-US', 'United States'), nat('Eric', 'en-US', 'United States'), nat('Guy', 'en-US', 'United States'), nat('Jenny', 'en-US', 'United States'),
+  nat('Michelle', 'en-US', 'United States'), nat('Roger', 'en-US', 'United States'), nat('Steffan', 'en-US', 'United States'),
+  mv('Microsoft Svetlana Online (Natural) - Russian (Russia)', 'ru-RU', false),
+];
+const V_WIN_OLD = V_EDGE.filter(v => v.localService);                                    // как было раньше: только встроенные
+const V_NET_ONLY = V_EDGE.filter(v => !v.localService);                                  // встроенных английских нет
+const V_CHROME = V_WIN_OLD.concat([mv('Google Deutsch', 'de-DE'), mv('Google US English', 'en-US'), mv('Google UK English Female', 'en-GB'), mv('Google UK English Male', 'en-GB'), mv('Google español', 'es-ES')]);
+const V_APPLE = ['Albert', 'Bad News', 'Bahh', 'Bells', 'Boing', 'Bubbles', 'Cellos', 'Eddy (English (US))', 'Flo (English (US))', 'Fred', 'Good News', 'Grandma (English (US))', 'Jester', 'Junior', 'Kathy', 'Organ', 'Ralph', 'Reed (English (US))', 'Samantha', 'Samantha (Enhanced)', 'Alex', 'Allison', 'Tom', 'Superstar', 'Trinoids', 'Whisper', 'Wobble', 'Zarvox']
+  .map(n => mv(n, 'en-US', true)).concat([mv('Daniel', 'en-GB', true), mv('Kate', 'en-GB', true), mv('Karen', 'en-AU', true), mv('Moira', 'en-IE', true), mv('Rishi', 'en-IN', true), mv('Tessa', 'en-ZA', true), mv('Milena', 'ru-RU', true)]);
+const V_ANDROID = [mv('English United States', 'en_US', true), mv('English United Kingdom', 'en_GB', true), mv('English India', 'en_IN', true), mv('Russian Russia', 'ru_RU', true)];
+const V_FOREIGN = [mv('English Australia', 'en-AU', true), mv('English India', 'en-IN', true), mv('Russian', 'ru-RU', true)];
+
 const VLIST = [
   { v: '1.4', date: '2026-12-01', notes: 'Новые упражнения на слух.', known: '', latest: true },
   { v: '1.3', date: '2026-11-15', notes: 'Автообновление и выбор версии.', known: '', running: true, downloaded: true },
@@ -124,7 +171,7 @@ async function suite(engine) {
   const errors = [];
   const open = async (vp, extra = {}, realTts = false) => {
     const ctx = await browser.newContext(Object.assign({ viewport: vp, reducedMotion: 'reduce' }, extra));
-    await ctx.addInitScript(CLOCK); if (!realTts) await ctx.addInitScript(TTS);
+    await ctx.addInitScript(CLOCK); if (Array.isArray(realTts)) await ctx.addInitScript(TTS_FULL(realTts)); else if (!realTts) await ctx.addInitScript(TTS);
     const p = await ctx.newPage();
     p.on('pageerror', e => errors.push(e.message));
     p.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
@@ -397,6 +444,174 @@ async function suite(engine) {
     console.log(`    настоящий синтез речи в ${engine}: ${dead ? 'не работает → задания на слух заменены выбором перевода' : 'работает → заданий на слух пройдено: ' + kept}`);
     check(dead ? kept === 0 : kept > 0, 'настоящий движок: задания на слух ' + (dead ? 'заменены' : 'сохранены') + ' (осталось на слух: ' + kept + ')');
     check((await counts(q)).learning === 10, 'настоящий движок: урок проходится до конца');
+    await q.context().close();
+  });
+
+  await section('голоса: короткий список, проверочная фраза, сетевой голос не отвечает', async () => {
+    const VP = { width: 390, height: 844 };
+    const toSet = async (vs, w) => { const q = await open(w || VP, {}, vs); await q.click('[data-act=nav][data-v=settings]:visible'); await q.evaluate(() => { __w3k.guard = 0; __w3k.ttsWait = 600; }); return q; };
+    const list = q => q.evaluate(() => { const s = document.querySelector('#voice-sel'); return s ? { auto: s.options[0].textContent, value: s.value, n: s.options.length, groups: [...s.querySelectorAll('optgroup')].map(g => g.label + ': ' + [...g.children].map(o => o.textContent).join(' | ')) } : null; });
+    const said = (q, from = 0) => q.evaluate(f => window.__said.slice(f).map(x => ({ t: x.t, v: x.v ? x.v.replace(/^Microsoft /, '').split(' ')[0] : null })), from);
+    const waitSaid = (q, n, ms = 4000) => q.waitForFunction(k => window.__said.length >= k, n, { timeout: ms }).catch(() => { });
+    const mark = q => q.evaluate(() => window.__said.length);
+    const pick = async (q, part) => { const v = await q.evaluate(p => { const o = [...document.querySelectorAll('#voice-sel option')].find(o => o.value.includes(p)); return o ? o.value : null; }, part); if (v) await q.selectOption('#voice-sel', v); return v; };
+    const note = q => q.textContent('#voice-note');
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+    // --- Edge в Windows: то, что видит пользователь программы ---
+    let q = await toSet(V_EDGE);
+    check(!await q.evaluate(() => window.__ttsMockError), 'подмена синтеза речи встала (' + await q.evaluate(() => window.__ttsMockError || 'ок') + ')');
+    check(await q.evaluate(() => __w3k.tts.voices.length) === 32, 'Edge: устройство отдаёт 32 английских голоса');
+    let l = await list(q);
+    check(same(l.groups, ['США: Aria · женский · интернет | Guy · мужской · интернет | Zira · женский | David · мужской', 'Великобритания: Sonia · женский · интернет | Hazel · женский']), 'Edge: в списке 4 голоса США и 2 британских, сетевые и встроенные, женские и мужские → ' + JSON.stringify(l.groups));
+    check(l.n === 7 && l.auto === 'Авто — Zira' && l.value === '', 'Edge: всего 7 строк, «Авто» — встроенный голос США → ' + l.auto + ', строк ' + l.n);
+    check((await note(q)).includes('сначала США, затем Великобритания') && (await note(q)).includes('«интернет»'), 'Edge: подпись объясняет порядок и пометку «интернет»');
+    await shot(q, 'voices-edge-phone');
+    // проверочная фраза
+    await q.click('[data-act=voice-test]'); await waitSaid(q, 3);
+    let a = await said(q);
+    check(a.length === 3 && a.every(x => x.v === 'Zira'), 'проверка голоса: три фразы голосом «Авто» (Zira) → ' + a.map(x => x.v).join(','));
+    const text = a.map(x => x.t).join(' '), words = text.split(/\s+/).length;
+    check(words >= 20 && words <= 30 && a.every(x => /[a-z]{3,}.*[a-z]{3,}.*[a-z]{3,}/i.test(x.t)), 'проверочная фраза: ' + words + ' слов, в каждом предложении не меньше трёх слов');
+    console.log('    фраза: ' + text);
+    const W = await q.evaluate(() => new Set(__w3k.W.map(w => String(w.en || w[0]).toLowerCase())));
+    await q.waitForTimeout(900);
+    check((await mark(q)) === 3 && !await q.evaluate(() => __w3k.ttsDead), 'после фразы тишина: ничего не повторяется, озвучка считается рабочей');
+    // выбор голоса сразу проигрывает фразу этим голосом
+    let m = await mark(q); await pick(q, 'Aria'); await waitSaid(q, m + 3);
+    a = await said(q, m);
+    check(a.length === 3 && a.every(x => x.v === 'Aria') && await q.evaluate(() => __w3k.S.set.voice.includes('Aria Online')), 'выбор голоса: фраза звучит выбранным голосом (Aria), выбор сохранён');
+    // смена голоса посреди фразы: старая обрывается, новая идёт с начала
+    await q.evaluate(() => { window.__ttsDur = 300; });
+    m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 1); await pick(q, 'Guy'); await waitSaid(q, m + 4, 6000);
+    a = await said(q, m);
+    check(a.length === 4 && a[0].v === 'Aria' && a.slice(1).every(x => x.v === 'Guy') && a[1].t === a[0].t, 'смена голоса посреди фразы: новая фраза с первого предложения новым голосом → ' + a.map(x => x.v).join(','));
+    // уход с экрана обрывает фразу
+    m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 1); await q.click('[data-act=nav][data-v=home]:visible'); await q.waitForTimeout(1200);
+    check((await mark(q)) === m + 1 && !await q.evaluate(() => __w3k.ttsDead), 'уход из настроек посреди фразы: она замолкает, озвучка не считается сломанной');
+    await q.evaluate(() => { window.__ttsDur = 25; __w3k.guard = 0; }); await q.click('[data-act=nav][data-v=settings]:visible'); await q.evaluate(() => { __w3k.guard = 0; });
+    l = await list(q); check(l.value.includes('Guy Online'), 'после возврата в настройки выбран тот же голос');
+    // сетевой голос обрывается после первой фразы
+    await pick(q, 'Aria'); await waitSaid(q, (await mark(q)) + 3); await q.waitForTimeout(100);
+    await q.evaluate(() => { window.__ttsMode = 'cut'; });
+    m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 3, 6000);
+    a = await said(q, m);
+    check(a.length === 3 && a[0].v === 'Aria' && a[1].v === 'Zira' && a[2].v === 'Zira' && new Set(a.map(x => x.t)).size === 3, 'сетевой голос замолк после первого предложения: остаток досказан встроенным → ' + a.map(x => x.v).join(','));
+    check((await note(q)).includes('«Aria» сейчас не отвечает') && (await note(q)).includes('«Zira»'), 'подпись говорит, что вместо Aria звучит Zira');
+    check(!await q.evaluate(() => __w3k.ttsDead), 'озвучка при этом не считается сломанной');
+    // новая проверка снова пробует сетевой голос
+    await q.evaluate(() => { window.__ttsMode = 'ok'; });
+    m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 3);
+    a = await said(q, m);
+    check(a.every(x => x.v === 'Aria') && a.length === 3 && !(await note(q)).includes('сейчас не отвечает'), 'повторная проверка: сетевой голос снова в деле, предупреждение убрано');
+    // сетевой голос отвечает ошибкой (как в Edge 156)
+    await q.evaluate(() => { window.__ttsMode = 'net'; });
+    m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 3);
+    a = await said(q, m);
+    check(a.length === 3 && a.every(x => x.v === 'Zira') && !await q.evaluate(() => __w3k.ttsDead), 'сетевой голос ответил ошибкой: вся фраза встроенным голосом, озвучка жива → ' + a.map(x => x.v).join(','));
+    // сетевой британский голос молчит → встроенный британский
+    await q.evaluate(() => { window.__ttsMode = 'ok'; }); await pick(q, 'Sonia'); await waitSaid(q, (await mark(q)) + 3); await q.waitForTimeout(100);
+    await q.evaluate(() => { window.__ttsMode = 'netsilent'; });
+    m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 3, 6000);
+    a = await said(q, m);
+    check(a.length === 3 && a.every(x => x.v === 'Hazel') && !await q.evaluate(() => __w3k.ttsDead), 'сетевой британский голос молчит: фраза звучит встроенным британским (Hazel) → ' + a.map(x => x.v).join(','));
+    // нет интернета → сетевой голос даже не пробуем
+    await q.evaluate(() => { window.__ttsMode = 'ok'; Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false }); window.dispatchEvent(new Event('offline')); });
+    await q.click('[data-act=voice-test]'); await q.waitForTimeout(50); await q.evaluate(() => { window.dispatchEvent(new Event('offline')); });
+    m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 3);
+    a = await said(q, m);
+    check(a.length === 3 && a.every(x => x.v === 'Hazel') && (await note(q)).includes('сейчас не отвечает'), 'без интернета: сразу встроенный голос, подпись предупреждает');
+    await q.evaluate(() => { Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true }); window.dispatchEvent(new Event('online')); });
+    check(!(await note(q)).includes('сейчас не отвечает'), 'интернет вернулся: предупреждение убрано');
+    // встроенный голос, у которого очередь встаёт после первой фразы
+    await pick(q, 'David'); await waitSaid(q, (await mark(q)) + 3); await q.waitForTimeout(100);
+    await q.evaluate(() => { window.__ttsMode = 'stall'; });
+    m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 3, 6000);
+    a = await said(q, m); await q.waitForTimeout(900);
+    check(a.length === 3 && a.every(x => x.v === 'David') && new Set(a.map(x => x.t)).size === 3 && (await mark(q)) === m + 3 && !await q.evaluate(() => __w3k.ttsDead), 'очередь встаёт после каждой фразы: все три предложения всё равно прозвучали по одному разу');
+    // фраза начинается и не заканчивается (движок завис)
+    await q.evaluate(() => { window.__ttsMode = 'ok'; }); await q.click('[data-act=voice-test]'); await waitSaid(q, (await mark(q)) + 3); await q.waitForTimeout(100);
+    await q.evaluate(() => { window.__ttsMode = 'hang'; });
+    m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 3, 9000);
+    a = await said(q, m); await q.waitForTimeout(2200);
+    check(a.length === 3 && a.every(x => x.v === 'David') && new Set(a.map(x => x.t)).size === 3 && (await mark(q)) === m + 3 && !await q.evaluate(() => __w3k.ttsDead), 'фраза началась и зависла: остальные предложения всё равно прозвучали по одному разу → ' + a.length);
+    await q.evaluate(() => { window.__ttsMode = 'ok'; }); await q.click('[data-act=voice-test]'); await waitSaid(q, (await mark(q)) + 3); await q.waitForTimeout(100);
+    // скорость речи сохраняется для каждой фразы
+    await q.click('[data-act=rate][data-v="0.7"]'); await q.waitForTimeout(150); await q.evaluate(() => { __w3k.guard = 0; });
+    m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 3);
+    check(await q.evaluate(f => window.__said.slice(f).every(x => x.rate === 0.7), m), 'скорость «медленно» действует на все три фразы');
+    await q.context().close();
+
+    // --- урок: слово звучит одной фразой, выбранным голосом; сетевой голос подменяется ---
+    q = await open(VP, {}, V_EDGE);
+    await q.evaluate(() => { __w3k.ttsWait = 600; });
+    await q.click('[data-act=first-start]'); await runSort(q, () => false);
+    let c = await st(q); m = await mark(q);
+    await q.keyboard.press('s'); await waitSaid(q, m + 1); await q.waitForTimeout(900);
+    a = await said(q, m);
+    check(a.length === 1 && a[0].v === 'Zira' && a[0].t.length < 40, 'урок: слово звучит один раз голосом «Авто» → ' + JSON.stringify(a));
+    await q.evaluate(() => { __w3k.S.set.voice = 'Microsoft Jenny Online (Natural) - English (United States)'; window.__ttsMode = 'net'; });
+    m = await mark(q); await q.keyboard.press('s'); await waitSaid(q, m + 1); await q.waitForTimeout(300);
+    a = await said(q, m);
+    check(a.length === 1 && a[0].v === 'Zira' && !await q.evaluate(() => __w3k.ttsDead), 'урок: сетевой голос ответил ошибкой → слово сказано встроенным, задания на слух остаются');
+    m = await mark(q); await q.keyboard.press('s'); await waitSaid(q, m + 1); await q.waitForTimeout(200);
+    a = await said(q, m);
+    check(a.length === 1 && a[0].v === 'Zira', 'урок: следующее слово сразу звучит встроенным голосом, без новой попытки');
+    await q.evaluate(() => { window.__ttsMode = 'ok'; });
+    for (let n = 0; n < 300 && await view(q) === 'session'; n++) await answer(q);
+    check((await counts(q)).learning === 10, 'урок с голосами проходится до конца');
+    // голос, выбранный раньше и не попавший в короткий список, остаётся выбранным
+    await q.click('[data-act=nav][data-v=home]:visible').catch(() => { }); await q.evaluate(() => { __w3k.guard = 0; });
+    await q.click('[data-act=nav][data-v=settings]:visible'); await q.evaluate(() => { __w3k.guard = 0; });
+    l = await list(q);
+    check(l.n === 8 && l.groups[2] === 'Выбран раньше: Jenny (en-US) · женский · интернет' && l.value.includes('Jenny'), 'голос, выбранный раньше (Jenny), показан отдельной строкой и остаётся выбранным → ' + (l.groups[2] || 'нет'));
+    await q.selectOption('#voice-sel', ''); await q.waitForTimeout(200);
+    await q.click('[data-act=nav][data-v=home]:visible'); await q.evaluate(() => { __w3k.guard = 0; }); await q.click('[data-act=nav][data-v=settings]:visible');
+    l = await list(q); check(l.n === 7 && l.value === '', 'после выбора «Авто» лишняя строка исчезает');
+    await q.context().close();
+
+    // --- другие устройства ---
+    const cases = [
+      ['Windows без сетевых голосов (как было раньше)', V_WIN_OLD, ['США: Zira · женский | David · мужской | Mark · мужской', 'Великобритания: Hazel · женский'], 'Авто — Zira'],
+      ['Edge без встроенных английских голосов', V_NET_ONLY, ['США: Aria · женский · интернет | Jenny · женский · интернет | Guy · мужской · интернет | Andrew · мужской · интернет', 'Великобритания: Sonia · женский · интернет | Ryan · мужской · интернет'], 'Авто — Aria'],
+      ['Chrome в Windows', V_CHROME, ['США: Google US English · женский · интернет | Zira · женский | David · мужской | Mark · мужской', 'Великобритания: Google UK English Female · женский · интернет | Hazel · женский'], 'Авто — Zira'],
+      ['Mac и iPhone', V_APPLE, ['США: Samantha (Enhanced) · женский | Alex · мужской | Allison · женский | Tom · мужской', 'Великобритания: Daniel · мужской | Kate · женский'], 'Авто — Samantha (Enhanced)'],
+      ['Android', V_ANDROID, ['США: English United States', 'Великобритания: English United Kingdom'], 'Авто — English United States'],
+      ['только другие страны', V_FOREIGN, ['Английский: English Australia (en-AU) | English India (en-IN)'], 'Авто — English Australia'],
+    ];
+    for (const [name, vs, want, auto] of cases) {
+      q = await toSet(vs);
+      l = await list(q);
+      check(!!l && same(l.groups, want) && l.auto === auto, name + ': ' + (l ? l.groups.join('; ') + ' / ' + l.auto : 'списка нет'));
+      m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 3);
+      check((await mark(q)) === m + 3, name + ': проверочная фраза звучит целиком');
+      if (vs === V_FOREIGN) check((await note(q)).includes('Голосов США и Великобритании на устройстве нет'), name + ': подпись объясняет, почему показаны другие');
+      if (vs === V_WIN_OLD) check(!(await note(q)).includes('интернет'), name + ': про интернет в подписи ни слова');
+      if (vs === V_NET_ONLY) {
+        await q.evaluate(() => { window.__ttsMode = 'net'; }); await q.click('[data-act=voice-test]');
+        await q.waitForFunction(() => __w3k.ttsDead, null, { timeout: 3000 }).catch(() => { });
+        check(await q.evaluate(() => __w3k.ttsDead) && (await q.textContent('.page')).includes('Озвучка сейчас не работает'), name + ': сетевые не отвечают, заменить нечем → честно сказано, что озвучка не работает');
+        await q.evaluate(() => { window.__ttsMode = 'ok'; }); m = await mark(q); await q.click('[data-act=voice-test]'); await waitSaid(q, m + 3);
+        await q.waitForFunction(() => !__w3k.ttsDead, null, { timeout: 3000 }).catch(() => { });
+        check(!await q.evaluate(() => __w3k.ttsDead), name + ': после удачной проверки озвучка снова рабочая');
+      }
+      await q.context().close();
+    }
+    // без списка голосов (голос устройства по умолчанию): фраза всё равно из трёх предложений
+    q = await open(VP); await q.click('[data-act=nav][data-v=settings]:visible'); await q.evaluate(() => { __w3k.guard = 0; });
+    if (await q.evaluate(() => __w3k.tts.voices.length) === 0) check(!await q.$('#voice-sel') && (await note(q)).includes('по умолчанию'), 'нет голосов: списка нет, подпись про голос по умолчанию');
+    else console.log('    в ' + engine + ' есть собственные английские голоса: ' + (await list(q)).groups.join('; '));
+    const before = await q.evaluate(() => window.__spoken || 0); await q.click('[data-act=voice-test]'); await q.waitForTimeout(200);
+    check(await q.evaluate(b => (window.__spoken || 0) - b, before) === 3, 'нет голосов: проверка всё равно говорит три фразы');
+    await q.context().close();
+    // вёрстка на компьютере
+    q = await toSet(V_EDGE, { width: 1280, height: 800 });
+    await q.locator('#voice-sel').scrollIntoViewIfNeeded(); await shot(q, 'voices-edge-desktop');
+    check(await q.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'компьютер: список голосов не даёт горизонтальной прокрутки');
+    await q.context().close();
+    q = await toSet(V_EDGE, { width: 320, height: 640 });
+    check(await q.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.querySelector('#voice-sel').getBoundingClientRect().right <= innerWidth), 'узкий телефон 320: список голосов помещается');
+    await q.locator('#voice-sel').scrollIntoViewIfNeeded(); await shot(q, 'voices-edge-320');
     await q.context().close();
   });
 

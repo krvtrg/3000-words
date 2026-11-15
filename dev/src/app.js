@@ -137,38 +137,134 @@ function checkTyped(w,val){
 const ambiguous=w=>W.some(v=>v!==w&&conflict(v,w));
 
 /* ================= speech ================= */
-const tts={ok:typeof window.speechSynthesis!=='undefined'&&typeof window.SpeechSynthesisUtterance!=='undefined',voices:[],dead:false,u:null};
-function loadVoices(){if(!tts.ok)return;try{tts.voices=speechSynthesis.getVoices().filter(v=>/^en([-_]|$)/i.test(v.lang))}catch(e){tts.voices=[]}}
+const tts={ok:typeof window.speechSynthesis!=='undefined'&&typeof window.SpeechSynthesisUtterance!=='undefined',voices:[],us:[],gb:[],other:[],short:[],ranked:[],netBad:false,long:false,dead:false,u:null};
+// Голоса. Устройство может отдавать десятки английских голосов (Edge — около двадцати, для всех стран).
+// В списке остаются только лучшие: до четырёх голосов США и до двух британских, женские и мужские поровну.
+// Голоса бывают встроенные и сетевые (Edge: «Online (Natural)», Chrome: «Google …»). Сетевые звучат лучше,
+// но зависят от интернета и от службы речи, поэтому половина мест в списке всегда остаётся за встроенными.
+const V_F=/\b(google us english|aria|jenny|ava|emma|michelle|samantha|zira|allison|susan|sonia|libby|hazel|kate|serena|martha|stephanie|female)\b/i;
+const V_M=/\b(guy|andrew|brian|christopher|eric|roger|steffan|david|mark|alex|tom|evan|aaron|ryan|thomas|george|daniel|oliver|arthur|male)\b/i;
+// детские и шуточные голоса: в короткий список не идут
+const V_ODD=/\b(ana|maisie|albert|bad news|bahh|bells|boing|bubbles|cellos|fred|good news|jester|junior|kathy|organ|ralph|superstar|trinoids|whisper|wobble|zarvox|eddy|flo|grandma|grandpa|reed|rocko|sandy|shelley)\b/i;
+// известные голоса от лучших к простым: Edge (сетевые), macOS и iOS, Chrome, встроенные в Windows
+const V_PREF={us:['aria','jenny','guy','ava','andrew','emma','brian','michelle','christopher','eric','roger','steffan','samantha','google us english','zira','david','mark','alex','allison','tom','evan'],
+  gb:['sonia','ryan','libby','thomas','google uk english female','google uk english male','hazel','george','susan','daniel','kate','serena','oliver','arthur','martha']};
+// «Microsoft Aria Online (Natural) - English (United States)» → «Aria»
+const vName=v=>String(v.name).replace(/^Microsoft\s+/i,'').replace(/\s+Online\s*\(Natural\)/i,'').replace(/\s+-\s+English.*$/i,'').replace(/\s+Desktop\b/i,'').replace(/([a-z])Multilingual\b/,'$1 Multilingual').trim()||String(v.name);
+const vBase=v=>vName(v).toLowerCase().replace(/\s*\((enhanced|premium|compact|улучшенный|премиум)\)/,'').replace(/\s*multilingual/,'').trim();
+const vReg=v=>{const l=String(v.lang).replace('_','-').toLowerCase();return l.indexOf('en-us')===0?'us':l.indexOf('en-gb')===0?'gb':''};
+const vGender=v=>{const n=vName(v);return V_F.test(n)?'f':V_M.test(n)?'m':''};
+// сетевой голос (без интернета не звучит): «Online (Natural)» в Edge и «Google …» в Chrome.
+// Одного признака localService мало: некоторые браузеры ставят false и встроенным голосам.
+const vOnline=v=>v.localService===false&&/online|natural|google|network|cloud/i.test(v.name);
+function vScore(v,reg){
+  const n=vName(v).toLowerCase(),L=V_PREF[reg]||[],i=L.findIndex(p=>(' '+n+' ').indexOf(' '+p+' ')>=0);
+  return (/natural|neural|premium|enhanced/i.test(v.name)?40:0)+(i>=0?30-i:0)-(/multilingual/i.test(v.name)?15:0)-(/compact/i.test(v.name)?10:0);
+}
+function vPick(vs,n,seen){
+  const out=[],cnt={f:0,m:0},cap=Math.ceil(n/2);
+  for(let pass=0;pass<2;pass++)for(const v of vs){
+    if(out.length>=n)break; if(out.indexOf(v)>=0)continue;
+    const base=vBase(v),g=vGender(v);
+    if(seen.has(base)||(!pass&&g&&cnt[g]>=cap))continue;
+    out.push(v);seen.add(base);if(g)cnt[g]++;
+  }
+  return out;
+}
+function vShort(vs,n){
+  const good=vs.filter(v=>!V_ODD.test(vName(v))),src=good.length?good:vs,net=src.filter(vOnline),loc=src.filter(v=>!vOnline(v)),seen=new Set();
+  if(!net.length||!loc.length)return vPick(src,n,seen);
+  const a=vPick(net,n/2,seen),b=vPick(loc,n/2,seen);          // сначала сетевые (лучшие), затем встроенные
+  return a.concat(b,vPick(src.filter(v=>a.indexOf(v)<0&&b.indexOf(v)<0),n-a.length-b.length,seen));
+}
+function loadVoices(){
+  if(!tts.ok)return;
+  try{tts.voices=speechSynthesis.getVoices().filter(v=>/^en([-_]|$)/i.test(v.lang))}catch(e){tts.voices=[]}
+  const rank=reg=>tts.voices.filter(v=>vReg(v)===reg).map((v,i)=>[v,vScore(v,reg),i]).sort((a,b)=>b[1]-a[1]||a[2]-b[2]).map(x=>x[0]);
+  const us=rank('us'),gb=rank('gb'),rest=rank('');
+  tts.us=vShort(us,4);tts.gb=vShort(gb,2);
+  tts.other=tts.us.length||tts.gb.length?[]:vShort(rest,4);     // ни американских, ни британских голосов нет: показываем, что есть
+  tts.short=tts.us.concat(tts.gb,tts.other);tts.ranked=us.concat(gb,rest);
+}
 if(tts.ok){loadVoices();try{speechSynthesis.addEventListener('voiceschanged',()=>{loadVoices();if(view==='settings')render()})}catch(e){}}
+// «Авто» — лучший встроенный голос США (он не зависит от сети), а если встроенных нет — лучший сетевой
+function autoVoice(){
+  for(const g of [tts.us,tts.gb,tts.other])if(g.length)return g.find(v=>!vOnline(v))||g[0];
+  return tts.ranked[0]||tts.voices[0]||null;
+}
+// встроенный голос на замену сетевому: той же страны, а если такого нет — любой
+function localFor(v){const r=v?vReg(v):'us';return tts.ranked.find(x=>!vOnline(x)&&vReg(x)===r)||tts.ranked.find(x=>!vOnline(x))||null}
+const netDown=()=>tts.netBad||navigator.onLine===false;
 function pickVoice(){
   if(!tts.voices.length) return null;
-  if(S.set.voice){const v=tts.voices.find(v=>v.name===S.set.voice);if(v)return v}
-  const pref=[/Google US English/i,/Samantha/i,/Microsoft (Aria|Jenny|Zira)/i,/Google UK English Female/i];
-  for(const r of pref){const v=tts.voices.find(v=>r.test(v.name));if(v)return v}
-  return tts.voices.find(v=>/en[-_]US/i.test(v.lang))||tts.voices.find(v=>/en[-_]GB/i.test(v.lang))||tts.voices[0];
+  const v=(S.set.voice&&tts.voices.find(v=>v.name===S.set.voice))||autoVoice();
+  return v&&vOnline(v)&&netDown()?localFor(v)||v:v;
 }
+function voiceNote(){
+  if(!tts.voices.length)return 'Используется голос устройства по умолчанию.';
+  const v=(S.set.voice&&tts.voices.find(v=>v.name===S.set.voice))||autoVoice(),sub=v&&vOnline(v)&&netDown()?localFor(v):null;
+  return (tts.other.length?'Голосов США и Великобритании на устройстве нет — показаны другие английские.':'Лучшие голоса устройства: сначала США, затем Великобритания.')
+    +(sub?` Голос «${vName(v)}» сейчас не отвечает (ему нужен интернет) — звучит встроенный «${vName(sub)}».`:tts.short.some(vOnline)?' Голосам с пометкой «интернет» нужна сеть; если такой голос не отвечает, звучит встроенный.':'');
+}
+function noteRefresh(){const m=$('#voice-note');if(m)m.textContent=voiceNote()}
+try{window.addEventListener('online',()=>{tts.netBad=false;noteRefresh()});window.addEventListener('offline',noteRefresh)}catch(e){}
+// проверочная фраза: три коротких предложения отдельными фразами — так её не обрывают голоса,
+// которые замолкают после первого предложения
+const SAMPLE=['Hello, this is how English words will sound.','People learn a few new words every day.','Where would you like to go this weekend?'];
 const TTS_FATAL=['synthesis-unavailable','synthesis-failed','language-unavailable','voice-unavailable','audio-hardware'];
+// ошибки, после которых сетевой голос заменяется встроенным
+const TTS_NET=['network','synthesis-unavailable','synthesis-failed','language-unavailable','voice-unavailable'];
 let ttsWait=4000, utterSeq=0;
 // задание на слух без звука решить нельзя: превращаем его в обычный выбор перевода
 function listenFallback(msg){if(view!=='session'||!cur||cur.answered||cur.task.t!=='listen')return;cur.task.t='er';showTask();guardUntil=0;if(msg)toast(msg)}
 // Озвучка не сработала (ошибка синтеза или тишина дольше нескольких секунд): до перезагрузки страницы
 // или удачной проверки голоса задания на слух заменяются выбором перевода.
 function ttsFailed(){if(tts.dead)return;tts.dead=true;listenFallback('Озвучка на этом устройстве не работает — задания на слух заменены выбором перевода');if(view==='settings'||view==='practice')render()}
-function speak(text,slow){
+// text — слово или список фраз: фразы ставятся в очередь и звучат подряд.
+// o.local — говорить встроенным голосом (сетевой подвёл); o.soft — это продолжение начатой фразы.
+function speak(text,slow,o){
   if(!tts.ok) return;
+  o=o||{};
   try{
     const sy=window.speechSynthesis;if(sy.speaking||sy.pending)sy.cancel();if(sy.paused)sy.resume();
-    const u=new SpeechSynthesisUtterance(text),v=pickVoice(),id=++utterSeq;let heard=false;
-    if(v){u.voice=v;u.lang=v.lang}else u.lang='en-US';
-    u.rate=slow?0.55:S.set.rate;
-    u.onstart=()=>{heard=true;if(tts.dead){tts.dead=false;if(view==='settings'||view==='practice')render()}};
-    u.onend=()=>{heard=true};
-    u.onerror=e=>{heard=true;if(id===utterSeq&&TTS_FATAL.includes(e&&e.error))ttsFailed()};
-    tts.u=u; // ссылка нужна, чтобы браузер не удалил фразу до событий
-    sy.speak(u);
-    setTimeout(()=>{if(!heard&&id===utterSeq&&!document.hidden)ttsFailed()},ttsWait);
+    const parts=Array.isArray(text)?text:[text],v0=pickVoice(),v=o.local?localFor(v0)||v0:v0,id=++utterSeq,n=parts.length;
+    let heard=false,started=0,ended=0;
+    // сетевой голос не ответил: до новой проверки или перезагрузки говорим встроенным, начиная с фразы from
+    const toLocal=from=>{
+      if(o.local||!v||!vOnline(v)||!localFor(v))return false;
+      tts.netBad=true;noteRefresh();speak(parts.slice(from),slow,{local:true,soft:from>0});return true;
+    };
+    // очередь встала посреди длинной фразы: досказываем остаток (сетевой голос при этом сменяется встроенным)
+    const resume=from=>{if(id===utterSeq&&!document.hidden&&!toLocal(from))speak(parts.slice(from),slow,{local:o.local,soft:true})};
+    const us=parts.map((t,i)=>{
+      const u=new SpeechSynthesisUtterance(t);
+      if(v){u.voice=v;u.lang=v.lang}else u.lang='en-US';
+      u.rate=slow?0.55:S.set.rate;
+      u.onstart=()=>{
+        heard=true;started=i+1;if(tts.dead){tts.dead=false;if(view==='settings'||view==='practice')render()}
+        // фраза началась, но так и не закончилась (с большим запасом на её длину)
+        if(i<n-1)setTimeout(()=>{if(ended<=i)resume(i+1)},Math.min(t.length*110/u.rate+2500,ttsWait*3));
+      };
+      u.onend=()=>{
+        heard=true;ended=i+1;if(id!==utterSeq||i>=n-1)return;
+        // фраза закончилась, а следующая так и не началась
+        setTimeout(()=>{if(started<=i+1)resume(i+1)},Math.min(2500,ttsWait));
+      };
+      u.onerror=e=>{
+        const err=e&&e.error;heard=true;if(id!==utterSeq||err==='interrupted'||err==='canceled')return;
+        if(TTS_NET.includes(err)&&toLocal(i))return;
+        if(TTS_FATAL.includes(err)&&!o.soft)ttsFailed();
+      };
+      return u;
+    });
+    tts.u=us; // ссылка нужна, чтобы браузер не удалил фразы до событий
+    tts.long=n>1||!!o.soft;
+    us.forEach(u=>sy.speak(u));
+    setTimeout(()=>{if(heard||id!==utterSeq||document.hidden||toLocal(0))return;if(!o.soft)ttsFailed()},ttsWait);
   }catch(e){}
 }
+// проверочная фраза не должна звучать поверх другого экрана
+function hush(){if(tts.ok&&tts.long){tts.long=false;utterSeq++;try{speechSynthesis.cancel()}catch(e){}}}
 const audioOn=()=>tts.ok&&!tts.dead&&S.set.audio;
 
 /* ================= scheduling ================= */
@@ -201,7 +297,7 @@ const dict={q:'',f:'all',limit:80};
 const prac={src:'learning',mode:'mix',n:20};
 const app=$('#app');
 
-function go(v){view=v;ses=null;cur=null;clearTimeout(timer);render();window.scrollTo(0,0)}
+function go(v){hush();view=v;ses=null;cur=null;clearTimeout(timer);render();window.scrollTo(0,0)}
 function render(){
   applyTheme();shownDay=today();shownNight=night();
   if(view==='session'){return}
@@ -632,7 +728,10 @@ function statsHTML(){
 function settingsHTML(){
   const s=S.set,sw=(k,on,dis)=>`<button class="switch" role="switch" aria-checked="${!!on}" data-act="toggle" data-k="${k}" ${dis?'disabled':''} aria-label="${{typing:'Ввод с клавиатуры',audio:'Задания на слух',autoSpeak:'Озвучивать слова автоматически'}[k]}"></button>`;
   const perDayLoad=s.perDay<=5?'около 5 минут в день':s.perDay<=10?'10–15 минут в день':s.perDay<=20?'25–30 минут в день':'больше получаса в день';
-  const voices=tts.voices.map(v=>`<option value="${esc(v.name)}" ${s.voice===v.name?'selected':''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('');
+  const vOpt=(v,full)=>{const g=vGender(v);return `<option value="${esc(v.name)}" ${s.voice===v.name?'selected':''}>${esc(vName(v))}${full?' ('+esc(v.lang)+')':''}${g?' · '+(g==='f'?'женский':'мужской'):''}${vOnline(v)?' · интернет':''}</option>`};
+  const vGrp=(l,vs,full)=>vs.length?`<optgroup label="${l}">${vs.map(v=>vOpt(v,full)).join('')}</optgroup>`:'';
+  const vSaved=s.voice?tts.voices.find(v=>v.name===s.voice):null,vAuto=autoVoice();
+  const voices=vGrp('США',tts.us)+vGrp('Великобритания',tts.gb)+vGrp('Английский',tts.other,true)+vGrp('Выбран раньше',vSaved&&tts.short.indexOf(vSaved)<0?[vSaved]:[],true);
   return `<div class="page-head"><div><h1>Настройки</h1></div></div>
   <section class="card"><h2>Занятия</h2><div class="set">
     <div class="set-row"><div><b>Новых слов в день</b><small>Сейчас: ${perDayLoad} вместе с повторениями</small></div>
@@ -642,7 +741,7 @@ function settingsHTML(){
   </div></section>
   <section class="card"><h2>Произношение</h2><div class="set">
     <div class="set-row"><div><b>Озвучивать слова автоматически</b><small>При показе слова и после ответа.</small></div>${sw('autoSpeak',s.autoSpeak&&tts.ok,!tts.ok)}</div>
-    ${tts.ok?`<div class="set-row"><div><b>Голос</b><small>${tts.voices.length?'Список зависит от устройства.':'Используется голос устройства по умолчанию.'}</small></div><div class="btn-row">${tts.voices.length?`<select class="sel" id="voice-sel" aria-label="Голос"><option value="">Авто</option>${voices}</select>`:''}<button class="btn sm" data-act="voice-test">${ic('sound')}Проверить</button></div></div>
+    ${tts.ok?`<div class="set-row"><div><b>Голос</b><small id="voice-note">${esc(voiceNote())}</small></div><div class="btn-row">${tts.voices.length?`<select class="sel" id="voice-sel" aria-label="Голос"><option value="">Авто${vAuto?' — '+esc(vName(vAuto)):''}</option>${voices}</select>`:''}<button class="btn sm" data-act="voice-test">${ic('sound')}Проверить</button></div></div>
     <div class="set-row"><div><b>Скорость речи</b></div><div class="seg" role="group">${[[0.7,'Медленно'],[0.9,'Обычно'],[1.05,'Быстро']].map(([v,l])=>`<button data-act="rate" data-v="${v}" aria-pressed="${Math.abs(s.rate-v)<.01}">${l}</button>`).join('')}</div></div>`:''}
   </div></section>
   <section class="card"><h2>Оформление</h2><div class="set"><div class="set-row"><div><b>Тема</b></div><div class="seg" role="group">${[['auto','Авто'],['light','Светлая'],['dark','Тёмная']].map(([v,l])=>`<button data-act="theme" data-v="${v}" aria-pressed="${s.theme===v}">${l}</button>`).join('')}</div></div></div></section>
@@ -816,7 +915,7 @@ const A={
   step(el){S.set.perDay=Math.min(50,Math.max(1,S.set.perDay+ +el.dataset.d));save();render()},
   rate(el){S.set.rate=+el.dataset.v;save();render();speak('This is how words will sound')},
   theme(el){S.set.theme=el.dataset.v;save();render()},
-  'voice-test'(){speak('Hello! This is how English words will sound.')},
+  'voice-test'(){tts.netBad=false;noteRefresh();speak(SAMPLE)},
   export(){exportModal()},
   'export-file'(){try{const d=new Date(),z=n=>String(n).padStart(2,'0');download(`english-progress-${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}.json`,exportText());S.backup=today();save();toast('Файл с прогрессом сохранён в загрузки')}catch(e){toast('Скачать не удалось — скопируйте текст')}},
   'export-copy'(){const ta=$('#exp-text');ta.focus();ta.select();const done=()=>{S.backup=today();save();toast('Текст скопирован')};const fail=()=>{try{document.execCommand('copy')?done():toast('Выделите текст и скопируйте вручную')}catch(e){toast('Выделите текст и скопируйте вручную')}};
@@ -874,7 +973,7 @@ document.addEventListener('input',e=>{
   else if(e.target.id==='tinp'){const m=$('#tmsg');if(m&&cur&&!cur.near)m.textContent=''}
 });
 document.addEventListener('change',e=>{
-  if(e.target.id==='voice-sel'){S.set.voice=e.target.value;save();speak('Hello! This is how English words will sound.')}
+  if(e.target.id==='voice-sel'){S.set.voice=e.target.value;save();tts.netBad=false;noteRefresh();speak(SAMPLE)}
   else if(e.target.id==='imp-file'){const f=e.target.files&&e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{const err=doImport(String(r.result||''));if(err){const m=$('#imp-msg');if(m)m.textContent=err}};r.onerror=()=>{const m=$('#imp-msg');if(m)m.textContent='Не удалось прочитать файл.'};r.readAsText(f)}
 });
 document.addEventListener('keydown',e=>{
@@ -916,6 +1015,6 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&(view==='
 setInterval(()=>{if((today()!==shownDay||night()!==shownNight)&&(view==='home'||view==='stats')&&!modalOpen())render()},60000);
 
 if(SH)try{SH.on(verRefresh)}catch(e){}        // оболочка сообщает: проверка закончилась, версия скачалась
-window.__w3k={version:VER,set guard(v){guardMs=v;guardUntil=0},set ttsWait(v){ttsWait=v},get ttsDead(){return tts.dead},get S(){return S},get cur(){return cur},get ses(){return ses},get view(){return view},W,counts,plan,dueWords,checkTyped,distract,conflict};
+window.__w3k={version:VER,set guard(v){guardMs=v;guardUntil=0},set ttsWait(v){ttsWait=v},get ttsDead(){return tts.dead},get tts(){return tts},get S(){return S},get cur(){return cur},get ses(){return ses},get view(){return view},W,counts,plan,dueWords,checkTyped,distract,conflict};
 render();
 })();

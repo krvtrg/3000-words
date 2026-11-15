@@ -22,7 +22,7 @@ python3 build.py --check — ничего не пишет, только свер
 """
 import hashlib, importlib.util, json, pathlib, re, sys
 
-VERSION = '1.4'   # менять при каждом изменении приложения
+VERSION = '1.5'   # менять при каждом изменении приложения
 
 src = pathlib.Path(__file__).resolve().parent     # resolve: иначе запуск по пути с «..» ищет файлы не там
 words = json.loads((src / 'data' / 'words.json').read_text(encoding='utf-8'))
