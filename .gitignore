@@ -1,0 +1,11 @@
+# служебное: зависимости тестов и временные файлы
+node_modules/
+package-lock.json
+dev/tests/shots/
+__pycache__/
+# папки окружения, к проекту не относятся
+/.cache/
+/.config/
+/.local/
+/.npm/
+/.sudo_as_admin_successful
