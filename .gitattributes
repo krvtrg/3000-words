@@ -1,0 +1,5 @@
+# Файлы версий сверяются по контрольной сумме (versions/versions.json): git не должен менять в них концы строк.
+*.html -text
+*.json -text
+*.exe binary
+*.ico binary

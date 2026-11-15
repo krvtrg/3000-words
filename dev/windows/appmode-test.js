@@ -1,6 +1,6 @@
 // Проверка «режима программы»: браузер на движке Chromium (тот же, что в Microsoft Edge)
 // запускается с теми же ключами, что и Words3000.exe, — отдельное окно и отдельный профиль.
-// Проверяет: прогресс переживает перезапуск и обновление файла программы (1.1 → текущая),
+// Проверяет: прогресс переживает перезапуск и обновление файла программы (обычная 1.1 → текущая программа с оболочкой),
 // а файл прогресса из обычной HTML-версии загружается с первого экрана.
 // Запуск (нужен X-сервер): xvfb-run -a node appmode-test.js
 const path = require('path'), fs = require('fs'), os = require('os');
@@ -17,12 +17,14 @@ const launch = async () => {
   const ctx = await chromium.launchPersistentContext(profile, { headless: false, viewport: null,
     args: ['--app=' + url, '--no-first-run', '--no-default-browser-check', '--window-size=1180,820'] });
   const p = ctx.pages()[0] || await ctx.waitForEvent('page');
-  await p.waitForFunction(() => window.__w3k); await p.evaluate(() => { __w3k.guard = 0; });
+  // с версии 1.3 файл программы — оболочка: при самом первом запуске она один раз перезагружает страницу и только потом запускает приложение
+  await p.waitForFunction(() => window.__w3k && document.getElementById('app').children.length && (!window.__shell || __shell.info().running), null, { timeout: 20000 });
+  await p.evaluate(() => { __w3k.guard = 0; });
   return { ctx, p };
 };
 const prog_ = p => p.evaluate(() => JSON.stringify([__w3k.S.p, __w3k.S.hist, __w3k.S.set]));
 const view = p => p.evaluate(() => __w3k.view);
-const ver = p => p.evaluate(() => (document.body.innerText.match(/Версия ([\d.]+)/) || [])[1]);
+const ver = p => p.evaluate(() => window.__w3k.version || (document.body.innerText.match(/Версия ([\d.]+)/) || [])[1]);
 (async () => {
   console.log('Окно программы, версия 1.1');
   fs.copyFileSync(path.join(ROOT, 'versions', 'english-words-v1.1.html'), page);
@@ -59,6 +61,8 @@ const ver = p => p.evaluate(() => (document.body.innerText.match(/Версия (
   check(await prog_(p) === before, 'прогресс на месте после обновления');
   await p.locator('[data-act=nav][data-v=settings]:visible').first().click();
   const v = await ver(p); check(v && v !== '1.1', 'в настройках показана новая версия: ' + v);
+  const sh = await p.evaluate(() => window.__shell ? __shell.info() : null);
+  check(sh && !sh.degraded && sh.running === v && await p.$('#ver-card'), 'программа работает через оболочку: в настройках есть раздел «Версия и обновления»');
   await ctx.close();
 
   console.log('Чистая установка + файл прогресса из HTML-версии');

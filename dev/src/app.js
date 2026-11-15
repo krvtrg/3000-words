@@ -620,7 +620,85 @@ function settingsHTML(){
     <p class="muted small" style="margin-bottom:14px">${store.ok?'Прогресс хранится в этом браузере на этом устройстве. Чтобы продолжить на другом устройстве или сделать резервную копию, сохраните его в файл и загрузите там.':'В режиме предпросмотра прогресс не сохраняется. Скачайте файл приложения и откройте его в браузере.'}</p>
     <div class="btn-row"><button class="btn" data-act="export">${ic('down')}Сохранить прогресс</button><button class="btn" data-act="import">${ic('up')}Загрузить прогресс</button><button class="btn danger" data-act="reset">Сбросить всё</button></div>
   </section>
-  <p class="muted small" style="text-align:center">Версия __VERSION__</p>`;
+  ${verShown=versionHTML()}`;
+}
+
+/* ================= версия и обновления ================= */
+/* Программа запускает приложение через оболочку (dev/shell): она хранит скачанные версии, проверяет обновления
+   и отдаёт всё это через window.__shell. Если файл открыт без оболочки, остаётся одна строка с номером версии. */
+const VER='__VERSION__';
+const SH=(()=>{try{const s=window.__shell;return s&&typeof s.info==='function'&&typeof s.use==='function'?s:null}catch(e){return null}})();
+const ver={busy:'',all:false};                    // busy: 'check' | 'latest' | 'use:<версия>' | 'restore'
+const shInfo=()=>{try{const i=SH&&SH.info();return i&&!i.degraded&&Array.isArray(i.versions)&&i.versions.length?i:null}catch(e){return null}};
+const cmpVer=(a,b)=>{const x=String(a).split('.'),y=String(b).split('.');for(let i=0;i<Math.max(x.length,y.length);i++){const d=(+x[i]||0)-(+y[i]||0);if(d)return d}return 0};
+const dmy=d=>{const m=/^(\d{4})-(\d\d)-(\d\d)/.exec(d||'');return m?`${m[3]}.${m[2]}.${m[1]}`:''};
+function whenText(t){
+  const d=new Date(t),n=new Date(),p=x=>String(x).padStart(2,'0'),hm=`${p(d.getHours())}:${p(d.getMinutes())}`;
+  const ago=Math.round((new Date(n.getFullYear(),n.getMonth(),n.getDate())-new Date(d.getFullYear(),d.getMonth(),d.getDate()))/DAY);
+  return ago===0?`сегодня в ${hm}`:ago===1?`вчера в ${hm}`:`${p(d.getDate())}.${p(d.getMonth()+1)}.${d.getFullYear()} в ${hm}`;
+}
+function versionHTML(){
+  const i=shInfo();
+  if(!i)return `<p class="muted small" style="text-align:center">Версия __VERSION__</p>`;
+  const run=i.running||VER,latest=i.latest||run,newer=cmpVer(latest,run)>0,L=i.versions.find(v=>v.v===latest)||{},busy=!!ver.busy;
+  const b=(act,label,cls,attr)=>`<button class="btn sm ${cls||''}" data-act="${act}" ${attr||''} ${busy?'disabled':''}>${label}</button>`;
+  let text,act='',warn=false;
+  if(i.pending&&cmpVer(i.pending,run)>0){text=`Версия ${esc(i.pending)} уже скачана и включится при следующем запуске.`;act=b('ver-apply','Включить сейчас','primary')}
+  else if(i.pinned&&newer){warn=true;text=`Вы пользуетесь версией ${esc(run)}, последняя — ${esc(latest)}. Автообновление приостановлено, пока выбрана эта версия.`;act=b('ver-latest',ver.busy==='latest'?'Перехожу…':'Вернуться к последней','primary')}
+  else if(newer&&L.needsProgram){warn=true;text=`Вышла версия ${esc(latest)}, но для неё нужна новая программа. Скачайте установщик на странице приложения и запустите его поверх — прогресс сохранится.`;
+    act=/^https:\/\//.test(i.home||'')?`<a class="btn sm" href="${esc(i.home)}" target="_blank" rel="noopener">Страница приложения</a>`:''}
+  else if(newer&&L.failed){warn=true;text=`Версия ${esc(latest)} на этом устройстве не запустилась, поэтому работает версия ${esc(run)}.`}
+  else if(newer&&!i.auto){text=`Вышла версия ${esc(latest)}. Автообновление выключено.`;act=b('ver-use',ver.busy==='use:'+latest?'Скачиваю…':'Обновить','primary',`data-v="${esc(latest)}"`)}
+  else if(newer)text=`Вышла версия ${esc(latest)}. Она скачается сама при следующей проверке.`;
+  else text=`Установлена версия ${esc(run)} — последняя.`;
+  const failed=i.lastError&&i.lastError.t>=(i.lastCheck||0);
+  const checkText=i.checking||ver.busy==='check'?'Проверяю…':failed?`Проверить не удалось: ${navigator.onLine===false?'нет интернета':'сервер обновлений не ответил'}.${i.lastCheck?` Последняя удачная проверка — ${whenText(i.lastCheck)}.`:''}`:i.lastCheck?`Последняя проверка — ${whenText(i.lastCheck)}.`:'Ещё не проверялось.';
+  const list=ver.all?i.versions:i.versions.slice(0,6);
+  const rows=list.map(v=>{
+    const on=v.v===run,tag=on?'<span class="badge m">работает сейчас</span>':v.needsProgram?'<span class="badge">нужна новая программа</span>':v.failed?'<span class="badge l">не запустилась</span>':v.v===latest?'<span class="badge">последняя</span>':'';
+    const go=on||v.needsProgram?'':b('ver-use',ver.busy==='use:'+v.v?(v.downloaded?'Перехожу…':'Скачиваю…'):v.failed?'Попробовать снова':'Перейти','',`data-v="${esc(v.v)}" aria-label="Перейти на версию ${esc(v.v)}"`);
+    return `<li class="${on?'on':''}"><div><div class="ver-top"><b>${esc(v.v)}</b>${dmy(v.date)?`<span class="muted small">${dmy(v.date)}</span>`:''}${tag}</div>${v.notes?`<p class="small muted">${esc(v.notes)}</p>`:''}${v.known?`<p class="small ver-known">Известные ошибки: ${esc(v.known)}</p>`:''}</div>${go}</li>`}).join('');
+  const nb=(i.backups||[]).length;
+  return `<section class="card" id="ver-card"><h2>Версия и обновления</h2>
+    <div class="${warn?'notice':'ver-status'}">${warn?ic('info'):''}<p>${text}</p>${act}</div>
+    <div class="set" style="margin-top:14px">
+      <div class="set-row"><div><b>Обновлять автоматически</b><small>Новая версия скачивается в фоне и включается при следующем запуске.${i.pinned?' Сейчас приостановлено: выбрана версия '+esc(i.pinned)+'.':''}</small></div><button class="switch" role="switch" aria-checked="${!!i.auto}" data-act="ver-auto" aria-label="Обновлять автоматически" ${busy?'disabled':''}></button></div>
+      <div class="set-row"><div><b>Проверка обновлений</b><small id="ver-check-text">${checkText}</small></div>${b('ver-check','Проверить сейчас')}</div>
+      <div class="set-row"><div><b>Копии прогресса</b><small>${nb?`Программа сама делает копию перед обновлением и перед сменой версии. Сохранено копий: ${nb}.`:'Программа сама делает копию перед обновлением и перед сменой версии. Пока копий нет.'}</small></div>${nb?b('ver-backups','Показать'):''}</div>
+    </div>
+    <h3 class="ver-h">Все версии</h3>
+    <p class="muted small">Можно перейти на любую и вернуться обратно. Прогресс при этом общий.</p>
+    <ul class="vers">${rows}</ul>
+    ${i.versions.length>list.length?`<button class="btn sm" data-act="ver-all" style="margin-top:10px">Показать все версии (${i.versions.length})</button>`:''}
+  </section>`;
+}
+let verShown='';                                 // что сейчас нарисовано в разделе: без изменений его не перерисовываем, чтобы не сбить нажатие
+let verHold=false,verLate=false;                 // пока в разделе нажата кнопка, его не перерисовываем: иначе нажатие пропадёт
+function verRelease(){if(!verHold)return;verHold=false;if(verLate){verLate=false;setTimeout(verRefresh,60)}}
+if(SH)try{
+  document.addEventListener('pointerdown',e=>{if(e.target&&e.target.closest&&e.target.closest('#ver-card'))verHold=true},true);
+  document.addEventListener('pointerup',verRelease,true);document.addEventListener('pointercancel',verRelease,true);
+}catch(e){}
+function verRefresh(){
+  if(view!=='settings')return;
+  if(verHold){verLate=true;return}
+  const c=$('#ver-card'),h=versionHTML();
+  if(!c||h===verShown)return;
+  const t=document.createElement('div');t.innerHTML=h;const n=t.firstElementChild;
+  if(n&&n.id==='ver-card'){c.replaceWith(n);verShown=h}else render();
+}
+const verDone=()=>{ver.busy='';verRefresh()};
+const verWait=()=>{setTimeout(verDone,2500)};      // оболочка перезапускает страницу сама; если этого не случилось, кнопки не должны остаться выключенными
+function verUse(v){
+  ver.busy='use:'+v;verRefresh();
+  SH.use(v).then(verWait,e=>{verDone();toast(String(e&&e.message||e))});            // при успехе оболочка сама перезапускает страницу
+}
+function backupsModal(){
+  const i=shInfo();if(!i)return;
+  const rows=(i.backups||[]).slice().sort((a,b)=>b.t-a.t).map(k=>`<li><div><b>${whenText(k.t)}</b><p class="small muted">${esc(k.reason||'копия')}</p></div><button class="btn sm" data-act="ver-restore" data-id="${esc(k.id)}" data-t="${k.t}">Восстановить</button></li>`).join('');
+  openModal(`<div class="modal-head"><h2>Копии прогресса</h2><button class="iconbtn" data-act="modal-close" aria-label="Закрыть">${ic('x')}</button></div>
+   <p class="muted small">Копия возвращает слова, расписание повторений и статистику на тот момент. Текущий прогресс перед этим тоже сохраняется в копию.</p>
+   <ul class="vers">${rows}</ul>`);
 }
 function exportText(){return JSON.stringify({app:'words3000',v:1,exported:new Date().toISOString(),data:S})}
 function exportModal(){
@@ -716,6 +794,25 @@ const A={
   import(){importModal()},
   'import-pick'(){$('#imp-file').click()},
   'import-apply'(){const t=$('#imp-text').value.trim();const m=$('#imp-msg');if(!t){m.textContent='Выберите файл или вставьте текст.';return}const err=doImport(t);if(err)m.textContent=err},
+  'ver-auto'(){const i=shInfo();if(!i)return;SH.setAuto(!i.auto).then(verDone,verDone)},
+  'ver-check'(){
+    if(!shInfo()||ver.busy)return;ver.busy='check';verRefresh();const t0=Date.now();
+    SH.check().then(i=>{verDone();const run=i.running||VER;
+      toast(i.lastError&&i.lastError.t>=t0?`Проверить не удалось: ${navigator.onLine===false?'нет интернета':'сервер обновлений не ответил'}`:
+        i.pending&&cmpVer(i.pending,run)>0?`Версия ${i.pending} скачана — включится при следующем запуске`:
+        cmpVer(i.latest||run,run)>0?`Последняя версия — ${i.latest}`:'У вас последняя версия')},verDone)},
+  'ver-use'(el){
+    const i=shInfo(),v=el.dataset.v,e=i&&i.versions.find(x=>x.v===v);if(!e||ver.busy)return;
+    if(cmpVer(v,i.latest||v)>=0)return verUse(v);                                    // переход на последнюю — без вопросов
+    openModal(`<h2>Перейти на версию ${esc(v)}?</h2><p class="muted">Прогресс сохранится: перед переходом программа сделает его копию. ${cmpVer(v,'1.3')<0?`Автообновление будет приостановлено. В версии ${esc(v)} этого раздела настроек нет: вернуться можно кнопкой «Вернуться к последней» в полосе наверху окна.`:'Автообновление будет приостановлено, пока вы не вернётесь к последней версии здесь же, в настройках.'}</p>${e.known?`<div class="notice">${ic('info')}<p>Известные ошибки версии ${esc(v)}: ${esc(e.known)}</p></div>`:''}<div class="modal-actions inline"><button class="btn" data-act="modal-close">Отмена</button><button class="btn primary" data-act="ver-use-yes" data-v="${esc(v)}">Перейти на ${esc(v)}</button></div>`)},
+  'ver-use-yes'(el){closeModal();verUse(el.dataset.v)},
+  'ver-latest'(){if(!shInfo()||ver.busy)return;ver.busy='latest';verRefresh();SH.useLatest().then(verWait,e=>{verDone();toast(String(e&&e.message||e))})},
+  'ver-apply'(){location.reload()},
+  'ver-all'(){ver.all=true;verRefresh()},
+  'ver-backups'(){backupsModal()},
+  'ver-restore'(el){const id=el.dataset.id,t=+el.dataset.t;
+    openModal(`<h2>Восстановить копию?</h2><p class="muted">Прогресс станет таким, каким был ${esc(whenText(t))}. Нынешний прогресс программа перед этим сохранит в отдельную копию.</p><div class="modal-actions inline"><button class="btn" data-act="ver-backups">Назад</button><button class="btn primary" data-act="ver-restore-yes" data-id="${esc(id)}">Восстановить</button></div>`)},
+  'ver-restore-yes'(el){if(!shInfo())return;closeModal();SH.restoreBackup(el.dataset.id).then(()=>{},e=>{toast(String(e&&e.message||e))})},
   reset(){confirmModal('Сбросить весь прогресс?','Выученные слова, расписание повторений и статистика будут удалены. Отменить это нельзя — при необходимости сначала сохраните прогресс в файл.','Сбросить','reset-yes',true)},
   'reset-yes'(){const set=S.set;S=fresh();S.set=set;save();closeModal();go('home');toast('Прогресс сброшен')}
 };
@@ -787,6 +884,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&(view==='
 // открытая вкладка пережила ночь: обновить план на новый день
 setInterval(()=>{if(today()!==shownDay&&(view==='home'||view==='stats')&&!modalOpen())render()},60000);
 
-window.__w3k={set guard(v){guardMs=v;guardUntil=0},set ttsWait(v){ttsWait=v},get ttsDead(){return tts.dead},get S(){return S},get cur(){return cur},get ses(){return ses},get view(){return view},W,counts,plan,dueWords,checkTyped,distract,conflict};
+if(SH)try{SH.on(verRefresh)}catch(e){}        // оболочка сообщает: проверка закончилась, версия скачалась
+window.__w3k={version:VER,set guard(v){guardMs=v;guardUntil=0},set ttsWait(v){ttsWait=v},get ttsDead(){return tts.dead},get S(){return S},get cur(){return cur},get ses(){return ses},get view(){return view},W,counts,plan,dueWords,checkTyped,distract,conflict};
 render();
 })();

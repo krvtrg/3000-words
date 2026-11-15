@@ -58,6 +58,15 @@ w "$setup" /S
 check 'cmp -s "$P/english-words.html" "$root/english-words.html"' "файл приложения заменён новым"
 check '[ "$(cat "$D/Profile/marker.txt" 2>/dev/null)" = "прогресс" ]' "профиль с прогрессом не тронут"
 
+echo "Обновление с настоящего установщика 1.2 (обычная версия → программа с автообновлением)"
+ver="$(sed -n "s/^VERSION = '\([0-9.]*\)'.*/\1/p" "$here/../src/build.py")"
+w "$root/versions/3000-words-setup-1.2.exe" /S
+check 'cmp -s "$P/english-words.html" "$root/versions/english-words-v1.2.html"' "установщик 1.2 поставил версию 1.2"
+w "$setup" /S
+check 'cmp -s "$P/english-words.html" "$root/english-words.html"' "поверх 1.2 встала текущая программа"
+check 'reg | grep DisplayVersion | grep -q "\"$ver\""' "в списке программ версия $ver"
+check '[ "$(cat "$D/Profile/marker.txt" 2>/dev/null)" = "прогресс" ]' "профиль с прогрессом не тронут"
+
 echo "Удаление"
 w "$P/uninstall.exe" /S; sleep 2; wineserver -w
 check '[ ! -e "$P" ]' "папка программы удалена"

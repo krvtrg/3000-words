@@ -8,14 +8,16 @@
  *   node run.js chromium --shots — ещё и снимки экранов в dev/tests/shots/
  *   node run.js webkit --only=случайные — только разделы, в названии которых есть это слово
  *
- * Проверяется собранный файл ../english-words.html.
+ * Проверяется само приложение — файл текущей версии из ../../versions/ (номер берётся из ../src/build.py).
+ * Файл программы в корне (оболочка с этой версией внутри) проверяет dev/shell/test.js.
  */
 const pw = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const FILE = path.join(ROOT, 'english-words.html');
+const VERSION = fs.readFileSync(path.join(ROOT, 'dev', 'src', 'build.py'), 'utf8').match(/^VERSION = '([\d.]+)'/m)[1];
+const FILE = path.join(ROOT, 'versions', `english-words-v${VERSION}.html`);
 const URL = 'file://' + FILE;
 const SHOTS = process.argv.includes('--shots');
 const ONLY = (process.argv.find(a => a.startsWith('--only=')) || '').slice(7);   // часть названия раздела
@@ -37,6 +39,28 @@ const CLOCK = `(()=>{const RD=Date;let off=0;
 // window.__ttsMode: 'ok' (по умолчанию) | 'error' (движок сообщает об ошибке) | 'silent' (ни звука, ни событий)
 const TTS = `(()=>{try{Object.defineProperty(window.speechSynthesis,'speak',{configurable:true,value:u=>{const m=window.__ttsMode||'ok';window.__spoken=(window.__spoken||0)+1;
  setTimeout(()=>{if(m==='ok'){u.onstart&&u.onstart({});u.onend&&u.onend({})}else if(m==='error'){u.onerror&&u.onerror({error:'synthesis-failed'})}},0)}})}catch(e){}})();`;
+
+// Подставная оболочка программы: то же устройство window.__shell, что в dev/shell/shell.js, но без сети и хранилища.
+// Тест меняет window.__sh.st и зовёт __sh.emit(); вызовы приложения копятся в __sh.calls.
+const VLIST = [
+  { v: '1.4', date: '2026-12-01', notes: 'Новые упражнения на слух.', known: '', latest: true },
+  { v: '1.3', date: '2026-11-15', notes: 'Автообновление и выбор версии.', known: '', running: true, downloaded: true },
+  { v: '1.2', date: '2026-11-15', notes: 'Программа для Windows.', known: '' },
+  { v: '1.1', date: '2026-11-14', notes: 'Исправления по итогам проверки.', known: '' },
+  { v: '1.0', date: '2026-11-13', notes: 'Первая версия <b id="xss">x</b>.', known: 'серия дней могла сбрасываться <img id="xss2" src=x>' }
+].map(e => Object.assign({ running: false, latest: false, downloaded: false, failed: false, data: 1, needsProgram: false }, e));
+const fakeShell = (over = {}) => `(()=>{const L=[],calls=[];
+ const st=Object.assign({shell:1,degraded:false,running:'1.3',builtin:'1.3',latest:'1.4',pinned:null,auto:true,home:'https://github.com/krvtrg/3000-words',
+   pending:null,lastCheck:0,lastError:null,checking:false,versions:${JSON.stringify(VLIST)},backups:[]},${JSON.stringify(over)});
+ const info=()=>{if(st.boom)throw new Error('boom');return JSON.parse(JSON.stringify(st))},emit=()=>L.forEach(f=>f(info()));
+ const later=f=>new Promise((res,rej)=>setTimeout(()=>{try{res(f())}catch(e){rej(e)}},st.delay||0));
+ window.__sh={st,calls,emit};
+ window.__shell={version:1,info,on:f=>L.push(f),off(){},
+  use:v=>{calls.push('use:'+v);return later(()=>{if(st.useError)throw new Error(st.useError);return info()})},
+  useLatest:()=>{calls.push('latest');return later(info)},
+  check:()=>{calls.push('check');st.checking=true;return later(()=>{st.checking=false;Object.assign(st,st.afterCheck||{});emit();return info()})},
+  setAuto:on=>{calls.push('auto:'+on);st.auto=on;emit();return Promise.resolve(info())},
+  restoreBackup:id=>{calls.push('restore:'+id);return later(()=>{if(st.restoreError)throw new Error(st.restoreError)})}};})();`;
 
 let failed = 0, passed = 0;
 const check = (cond, msg) => { if (cond) passed++; else { failed++; console.log('    ✗ ' + msg); } };
@@ -417,6 +441,157 @@ async function suite(engine) {
     await day(q, 1); await q.click('.tabbar [data-v=home]');
     check((await counts(q)).due === 10, 'на следующий день слова из версии 1.0 приходят на повторение');
     await q.click('[data-act=lesson]'); await runSession(q); check((await invariants(q)).length === 0, 'после занятия в 1.1 данные целы');
+    await q.context().close();
+  });
+
+  await section('версия и обновления: раздел настроек с подставной оболочкой', async () => {
+    const openSh = async (over, vp = { width: 1100, height: 900 }, extra = {}) => {
+      const ctx = await browser.newContext(Object.assign({ viewport: vp, reducedMotion: 'reduce' }, extra));
+      await ctx.addInitScript(CLOCK); await ctx.addInitScript(TTS); if (over !== null) await ctx.addInitScript(fakeShell(over));
+      const q = await ctx.newPage(); q.on('pageerror', e => errors.push(e.message));
+      await q.goto(URL); await q.evaluate(() => { __w3k.guard = 0; });
+      await q.click('[data-act=nav][data-v=settings]:visible');
+      return q;
+    };
+    const card = q => q.$eval('#ver-card', e => e.innerText).catch(() => null);
+    const cardShot = async (q, name) => { if (SHOTS) { fs.mkdirSync(path.join(__dirname, 'shots'), { recursive: true }); await q.locator('#ver-card').screenshot({ path: path.join(__dirname, 'shots', `${engine}-${name}.png`) }); } };
+    const calls = q => q.evaluate(() => __sh.calls.slice());
+    const set = (q, o) => q.evaluate(o => { Object.assign(__sh.st, o); __sh.emit(); }, o);
+    const foot = q => q.evaluate(() => (document.querySelector('#app').innerText.match(/Версия \d+\.\d+$/m) || [''])[0]);
+
+    // без оболочки и с оболочкой, которая не может работать
+    let q = await openSh(null);
+    check(await card(q) === null && /^Версия \d+\.\d+$/.test(await foot(q)), 'без оболочки: раздела нет, внизу строка с номером версии');
+    await q.context().close();
+    q = await openSh({ degraded: true, versions: [] });
+    check(await card(q) === null && /^Версия/.test(await foot(q)), 'оболочка без хранилища: раздела нет, приложение работает');
+    await q.context().close();
+    q = await openSh({ boom: true });
+    check(await card(q) === null && /^Версия/.test(await foot(q)), 'оболочка с ошибкой: раздела нет, приложение работает');
+    await q.context().close();
+
+    // обычное состояние: последняя версия
+    q = await openSh({ latest: '1.3', versions: VLIST.slice(1).map((e, i) => Object.assign({}, e, { latest: i === 0 })), lastCheck: Date.now() - 60000 });
+    let t = await card(q);
+    check(/Установлена версия 1\.3 — последняя/.test(t), 'последняя версия: так и написано');
+    check(/Последняя проверка — сегодня в \d\d:\d\d/.test(t), 'показано время последней проверки');
+    check(await q.$$eval('.vers li', a => a.map(l => l.querySelector('b').textContent).join()) === '1.3,1.2,1.1,1.0', 'в списке все версии от новой к старой');
+    check(await q.$eval('.vers li.on', l => /работает сейчас/.test(l.innerText) && !l.querySelector('button')), 'текущая версия отмечена и без кнопки перехода');
+    check(await q.$$eval('.vers li:not(.on) [data-act=ver-use]', a => a.length) === 3, 'у остальных версий есть кнопка «Перейти»');
+    check(/13\.11\.2026/.test(t) && /Известные ошибки: серия дней/.test(t), 'у версии 1.0 показаны дата и известные ошибки');
+    check(!await q.$('#xss') && !await q.$('#xss2') && /<b id="xss">/.test(t), 'текст из списка версий выводится как текст, а не как разметка');
+    check(!/Копии прогресса[\s\S]*Показать\n/.test(t) && /Пока копий нет/.test(t), 'копий нет: кнопки нет');
+    await cardShot(q, '20-version-latest');
+
+    // переход на старую версию: вопрос, отмена, подтверждение
+    await q.click('[data-act=ver-use][data-v="1.0"]');
+    check(/Перейти на версию 1\.0\?/.test(await q.$eval('.modal', m => m.innerText)) && /Известные ошибки версии 1\.0/.test(await q.$eval('.modal', m => m.innerText)), 'перед переходом на старую версию — вопрос с известными ошибками');
+    check(!await q.$('.modal #xss2'), 'в вопросе текст тоже не становится разметкой');
+    await set(q, {});
+    check(await q.$('.modal'), 'сообщение оболочки не закрывает открытое окно');
+    await q.click('.modal [data-act=modal-close]');
+    check((await calls(q)).length === 0 && !await q.$('.modal'), '«Отмена»: ничего не происходит');
+    await q.evaluate(() => { __sh.st.delay = 400; __sh.st.useError = 'Не удалось скачать версию 1.0: нет интернета'; });
+    await q.click('[data-act=ver-use][data-v="1.0"]'); await q.click('.modal [data-act=ver-use-yes]');
+    check((await calls(q)).join() === 'use:1.0', 'подтверждение: оболочку просят перейти на 1.0');
+    check(await q.$eval('[data-act=ver-use][data-v="1.0"]', b => b.disabled && /Скачиваю/.test(b.textContent)) && await q.$$eval('#ver-card button', a => a.every(b => b.disabled)), 'пока идёт скачивание, кнопки раздела выключены');
+    await q.waitForSelector('.toast');
+    check(/нет интернета/.test(await q.$eval('.toast', e => e.textContent)) && await q.$eval('[data-act=ver-use][data-v="1.0"]', b => !b.disabled && /Перейти/.test(b.textContent)), 'скачать не удалось: сообщение и кнопки снова работают');
+
+    // оболочка прислала новость ровно в момент нажатия: нажатие не должно пропасть
+    await q.evaluate(() => { __sh.st.delay = 0; __sh.st.useError = ''; });
+    await q.hover('[data-act=ver-use][data-v="1.1"]'); await q.mouse.down();
+    await set(q, { lastCheck: Date.now() - 3600e3 });
+    const kept = await q.$eval('#ver-check-text', e => e.textContent);
+    await q.mouse.up();
+    check(await q.$('.modal') && /Перейти на версию 1\.1\?/.test(await q.$eval('.modal', m => m.innerText)), 'новость от оболочки во время нажатия кнопки: нажатие сработало');
+    await q.click('.modal [data-act=modal-close]');
+    await q.waitForFunction(t => document.querySelector('#ver-check-text').textContent !== t, kept, { timeout: 3000 }).catch(() => {});
+    check(await q.$eval('#ver-check-text', e => e.textContent) !== kept, '…а раздел обновился сразу после нажатия');
+
+    // выключатель автообновления
+    await q.click('[data-act=ver-auto]');
+    check((await calls(q)).pop() === 'auto:false' && await q.$eval('[data-act=ver-auto]', b => b.getAttribute('aria-checked')) === 'false', 'выключатель автообновления передаёт команду и меняет вид');
+    await q.click('[data-act=ver-auto]');
+    check((await calls(q)).pop() === 'auto:true' && await q.$eval('[data-act=ver-auto]', b => b.getAttribute('aria-checked')) === 'true', '…и включается обратно');
+
+    // «Проверить сейчас»: нашлась новая версия
+    await q.evaluate(L => { __sh.st.delay = 400; __sh.st.afterCheck = { latest: '1.4', pending: '1.4', lastCheck: Date.now(), versions: L }; }, VLIST.map(e => e.v === '1.4' ? Object.assign({}, e, { downloaded: true }) : e));
+    await q.click('[data-act=ver-check]');
+    check(await q.$eval('#ver-check-text', e => e.textContent) === 'Проверяю…' && await q.$eval('[data-act=ver-check]', b => b.disabled), 'во время проверки написано «Проверяю…»');
+    await q.waitForFunction(() => /скачана/.test((document.querySelector('.toast') || {}).textContent || ''));
+    t = await card(q);
+    check(/Версия 1\.4 уже скачана и включится при следующем запуске/.test(t) && await q.$('[data-act=ver-apply]'), 'новая версия скачана: об этом написано, есть «Включить сейчас»');
+    check(await q.$$eval('.vers li', a => a.length) === 5 && await q.$eval('.vers li', l => /последняя/.test(l.innerText)), 'новая версия появилась в списке');
+    await cardShot(q, '21-version-pending');
+    const nav = q.waitForNavigation(); await q.click('[data-act=ver-apply]'); await nav;
+    check(true, '«Включить сейчас» перезапускает страницу');
+    await q.context().close();
+
+    // проверка не удалась
+    q = await openSh({ latest: '1.3', versions: VLIST.slice(1), delay: 100 });
+    check(/Ещё не проверялось/.test(await card(q)), 'до первой проверки: «Ещё не проверялось»');
+    await q.evaluate(() => { __sh.st.afterCheck = { lastError: { t: Date.now() + 1000, msg: 'Failed to fetch' } }; });
+    await q.click('[data-act=ver-check]'); await q.waitForSelector('.toast');
+    check(/Проверить не удалось/.test(await q.$eval('.toast', e => e.textContent)) && /Проверить не удалось: (нет интернета|сервер обновлений не ответил)/.test(await card(q)) && !/Failed to fetch/.test(await card(q)), 'сбой проверки: понятное сообщение без технического текста');
+    // выбрана не последняя версия
+    await set(q, { latest: '1.4', pinned: '1.3', versions: VLIST, lastError: null, delay: 300 });
+    t = await card(q);
+    check(/Вы пользуетесь версией 1\.3, последняя — 1\.4\. Автообновление приостановлено/.test(t) && /Сейчас приостановлено: выбрана версия 1\.3/.test(t), 'закреплена не последняя версия: написано, что автообновление приостановлено');
+    await cardShot(q, '22-version-pinned');
+    await q.click('[data-act=ver-latest]');
+    check((await calls(q)).pop() === 'latest' && await q.$eval('[data-act=ver-latest]', b => b.disabled), '«Вернуться к последней» передаёт команду оболочке');
+    await q.waitForFunction(() => !document.querySelector('[data-act=ver-latest]').disabled, null, { timeout: 5000 });
+    check(true, 'если оболочка не перезапустила страницу, кнопки через пару секунд снова работают');
+    // переход на последнюю — без вопроса
+    await set(q, { pinned: null, auto: false, delay: 0 });
+    check(/Вышла версия 1\.4\. Автообновление выключено/.test(await card(q)), 'автообновление выключено, а версия вышла: предлагается обновить');
+    await q.click('.ver-status [data-act=ver-use]');
+    check((await calls(q)).pop() === 'use:1.4' && !await q.$('.modal'), '«Обновить» переходит на последнюю версию без лишнего вопроса');
+    await q.waitForFunction(() => !document.querySelector('[data-act=ver-check]').disabled, null, { timeout: 5000 });
+    // новая версия требует новой программы
+    await set(q, { auto: true, versions: VLIST.map(e => e.v === '1.4' ? Object.assign({}, e, { needsProgram: true }) : e) });
+    t = await card(q);
+    check(/нужна новая программа/.test(t) && await q.$eval('#ver-card .notice a', a => a.href === 'https://github.com/krvtrg/3000-words' && a.target === '_blank') && !await q.$('[data-act=ver-use][data-v="1.4"]'), 'версия для новой программы: ссылка на страницу, кнопки перехода нет');
+    // новая версия не запустилась
+    await set(q, { versions: VLIST.map(e => e.v === '1.4' ? Object.assign({}, e, { failed: true }) : e) });
+    t = await card(q);
+    check(/Версия 1\.4 на этом устройстве не запустилась/.test(t) && /Попробовать снова/.test(t), 'версия не запустилась: написано, можно попробовать снова');
+    // ждём сама
+    await set(q, { versions: VLIST });
+    check(/Вышла версия 1\.4\. Она скачается сама/.test(await card(q)), 'версия вышла, ещё не скачана: написано, что скачается сама');
+
+    // копии прогресса
+    const T0 = Date.now() - 2 * 864e5;
+    await set(q, { backups: [{ id: 'backup:1', t: T0, reason: 'перед обновлением до 1.3', v: '1.3', from: '1.2' }, { id: 'backup:2', t: Date.now() - 5000, reason: 'перед переходом на 1.0', v: '1.0', from: '1.3' }], delay: 100, restoreError: 'Копия не найдена' });
+    check(/Сохранено копий: 2/.test(await card(q)), 'число копий показано');
+    await q.click('[data-act=ver-backups]');
+    check(await q.$$eval('.modal .vers li', a => a.map(l => l.innerText.replace(/\s+/g, ' ')).join('|')).then(x => /^сегодня в \d\d:\d\d перед переходом на 1\.0 Восстановить\|\d\d\.\d\d\.\d{4} в \d\d:\d\d перед обновлением до 1\.3/.test(x)), 'список копий: новые сверху, с датой и причиной');
+    await q.click('.modal [data-act=ver-restore][data-id="backup:1"]');
+    check(/Восстановить копию\?/.test(await q.$eval('.modal', m => m.innerText)) && (await calls(q)).every(c => !c.startsWith('restore')), 'перед восстановлением — вопрос');
+    await q.click('.modal [data-act=ver-backups]');
+    check(await q.$$eval('.modal .vers li', a => a.length) === 2, '«Назад» возвращает к списку копий');
+    await q.click('.modal [data-act=ver-restore][data-id="backup:1"]'); await q.click('.modal [data-act=ver-restore-yes]');
+    await q.waitForFunction(() => /Копия не найдена/.test((document.querySelector('.toast') || {}).textContent || ''));
+    check((await calls(q)).pop() === 'restore:backup:1' && !await q.$('.modal'), 'восстановление передаётся оболочке; при сбое — сообщение');
+
+    // длинный список версий
+    const many = []; for (let i = 14; i >= 0; i--) many.push(Object.assign({}, VLIST[2], { v: '1.' + i, running: i === 3, latest: i === 14 }));
+    await set(q, { latest: '1.14', versions: many, pinned: '1.3' });
+    check(await q.$$eval('.vers li', a => a.length) === 6 && /Показать все версии \(15\)/.test(await card(q)), 'длинный список: сначала шесть версий');
+    await q.click('[data-act=ver-all]');
+    check(await q.$$eval('.vers li', a => a.length) === 15 && !await q.$('[data-act=ver-all]'), '«Показать все версии» раскрывает список');
+    check(/последняя — 1\.14/.test(await card(q)), 'версии сравниваются по числам: 1.14 новее 1.3');
+    await q.context().close();
+
+    // вёрстка: телефон, тёмная тема
+    q = await openSh({ pinned: '1.3', backups: [{ id: 'backup:1', t: T0, reason: 'перед обновлением до 1.3' }] }, { width: 360, height: 780 }, { colorScheme: 'dark', hasTouch: engine !== 'firefox' });
+    check(await q.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'телефон 360 px: раздел не даёт горизонтальной прокрутки');
+    check(await q.$$eval('#ver-card button, #ver-card a', a => a.every(b => { const r = b.getBoundingClientRect(); return r.right <= innerWidth && r.left >= 0 && r.height >= 32; })), 'кнопки раздела целиком на экране и достаточно крупные');
+    await cardShot(q, '23-version-phone-dark');
+    await q.click('[data-act=ver-use][data-v="1.0"]');
+    check(await q.evaluate(() => { const r = document.querySelector('.modal').getBoundingClientRect(); return r.right <= innerWidth && r.bottom <= innerHeight + 1; }), 'вопрос о переходе помещается на экран телефона');
+    await shot(q, '24-version-confirm-phone');
     await q.context().close();
   });
 

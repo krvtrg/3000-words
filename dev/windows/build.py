@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Собирает установщик для Windows из готового english-words.html.
+"""Собирает установщик для Windows из готового файла программы <корень>/english-words.html
+(оболочка со встроенной версией приложения; её собирает ../src/build.py).
 
 Нужен NSIS (в Debian/Ubuntu: sudo apt install nsis). Запуск: python3 build.py
 Результат:
@@ -7,15 +8,17 @@
   <корень>/versions/3000-words-setup-<N>.exe     — он же с номером версии (старые не трогаются)
 
 Версия берётся из ../src/build.py. Сначала соберите само приложение: cd ../src && python3 build.py
+Новый установщик нужен, когда меняется оболочка; новые версии приложения программа скачивает сама.
 """
 import pathlib, re, shutil, subprocess, sys, tempfile
 
 here = pathlib.Path(__file__).resolve().parent
 root = here.parent.parent
 version = re.search(r"^VERSION = '([\d.]+)'", (here.parent / 'src' / 'build.py').read_text(encoding='utf-8'), re.M).group(1)
-html = root / 'versions' / f'english-words-v{version}.html'
-if not html.exists():
-    sys.exit(f'Нет {html}. Сначала соберите приложение: cd ../src && python3 build.py')
+html = root / 'english-words.html'
+# в установщик должен попасть ровно тот файл, который получается при сборке этой версии
+if subprocess.run([sys.executable, str(here.parent / 'src' / 'build.py'), '--check']).returncode:
+    sys.exit('Сначала соберите приложение: cd ../src && python3 build.py')
 vfile = root / 'versions' / f'3000-words-setup-{version}.exe'
 if vfile.exists() and '--force' not in sys.argv:
     sys.exit(f'Установщик версии {version} уже существует. Поднимите VERSION в ../src/build.py (или запустите с --force).')
